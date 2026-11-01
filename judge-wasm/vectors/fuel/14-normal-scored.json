@@ -1,0 +1,1 @@
+{"criteria":"{\"passThreshold\":100,\"checks\":[{\"kind\":\"length\",\"params\":{\"min\":1,\"max\":5000,\"unit\":\"words\"}},{\"kind\":\"contains\",\"params\":{\"all\":[\"USDC\",\"Arc\"]}}]}","deliverable":"Paid in USDC on Arc for the agreed work."}

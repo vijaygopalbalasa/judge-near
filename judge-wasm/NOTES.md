@@ -91,3 +91,41 @@ out: {"v":1,"pass":false,"score":0,"th":100,"ch":"eb974a7f5ec1b337afeb736d5f5f55
 
 33 planted bugs, each confirmed to fail at least one test and reverted; suite
 green before and after. See MUTATION-LOG.md.
+
+## Fuel regression guard
+
+An adversarial corpus and a guard keep the worst-case instruction count from
+regressing past the recommended `max_instructions` (the stall vector of
+interface.md section 4). All measured under wasmtime fuel, the metering OutLayer
+uses, on judge.wasm `da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1`.
+
+- `scripts/make-fuel-corpus.mjs` writes 15 adversarial inputs to `vectors/fuel/`
+  (committed), each within the interface limits and on the scoring path: ~1,266
+  empty wholeWords terms over spaced and solid 16 KB text (the pre-linearization
+  17.4-billion case), ~783 distinct letters and 85 `a..ab` runs each found only at
+  the end (defeating memoization), a 1024-unit late mismatch, 16x length /
+  checksum / schema / json including nested `anyOf`, ~1,457-item `uniqueBy`,
+  `uniqueBy` over URL domains, a max-size emoji+combining deliverable, and a
+  normal scored case.
+- `scripts/fuel-check.sh [cap] [wasm]` runs the judge over every corpus file under
+  a fuel cap (default 3,000,000,000, the recommended `max_instructions`) and fails
+  if any case runs out of fuel or does not print a verdict. Build the wasm first
+  (BUILD.md), then run it. It needs only wasmtime and the committed corpus.
+
+Results on `da3b581d`:
+- fuel-check at 3,000,000,000: all 15 cases pass (per-run wall 6 to 38 ms, which
+  includes wasmtime process start and JIT of the module; the guest run itself is a
+  few ms). Negative control: at a 50,000,000 cap the guard correctly fails 5 cases.
+- Precise worst case (binary-searched by `scripts/measure-limits.mjs`): 589,750,000
+  instructions (16 json checks, nested `anyOf` over nested arrays), 1,792 KiB
+  linear memory (16 json checks over ~1,457 items with `uniqueBy`), about 21 ms
+  including about 5 ms compile and start. The whole-word families, once the
+  17.4-billion ceiling, now top out near 577 million (the ~783 distinct-letter
+  case).
+
+Recommended `resource_limits` (full reasoning and deposit math in
+RESOURCE-LIMITS.md): `max_instructions` 3,000,000,000 (about 5x the 0.59B worst
+case, far under the 500B testnet cap), `max_memory_mb` 16 (about 9x the 1.75 MB
+peak), `max_execution_seconds` 5 (the worker floors the timeout at 5 s, and this
+is the field that scales the deposit, so no higher). `build_target` is
+`wasm32-wasip1`.
