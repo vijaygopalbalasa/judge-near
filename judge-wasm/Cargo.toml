@@ -1,0 +1,28 @@
+[package]
+name = "judge-wasm"
+version = "1.0.0"
+edition = "2021"
+description = "Deterministic job-escrow judge for OutLayer TEE workers (wasm32-wasip1)."
+license = "MIT"
+
+# Standalone package: do not search parent directories for a workspace.
+[workspace]
+
+[[bin]]
+name = "judge"
+path = "src/main.rs"
+
+[lib]
+name = "judge_wasm"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = { version = "1.0.145", features = ["arbitrary_precision"] }
+sha2 = "0.10.9"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
