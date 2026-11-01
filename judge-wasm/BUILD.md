@@ -64,3 +64,14 @@ is not linked.
 opt-level "z", lto, codegen-units 1, strip, panic = "abort" (Cargo.toml).
 opt-level "s" was measured as ~4% fewer instructions but ~6% larger; "z" kept
 (fuel headroom is ample either way; see RESOURCE-LIMITS.md).
+
+## Published artifact
+
+`release/judge.wasm` is the file OutLayer downloads (the escrow pins its URL at a fixed
+commit and its SHA-256). It is a copy of the build output above; check it with:
+
+```sh
+cd judge-wasm/release && shasum -a 256 -c judge.wasm.sha256
+```
+
+A rebuild with the command above must print the same hash.

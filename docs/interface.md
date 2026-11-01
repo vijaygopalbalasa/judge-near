@@ -63,6 +63,16 @@ string.
   the input above as `input_data`, `response_format = "Json"`, explicit `resource_limits`, and
   `payer_account_id` = the account that asked for the ruling (it gets the unused deposit back).
 - The judge's URL and hash are fixed when the contract is initialised and cannot be changed by anyone.
+- Only the job's client or provider can request a ruling, and the attached deposit must be at least the contract's
+  `min_ruling_deposit` (also fixed at initialisation). With an adequate deposit OutLayer really runs the judge, so a
+  request cannot be used to stall a job.
+- Cost bound: the judge's measured worst case over adversarial but valid inputs (criteria at most 4,096 bytes,
+  deliverable at most 16,384 bytes, at most 16 checks) is about 0.59 billion instructions, 1.75 MB and 21 ms
+  (`judge-wasm/RESOURCE-LIMITS.md`, guarded by `judge-wasm/scripts/fuel-check.sh`). The contract asks OutLayer for
+  50 billion instructions, 64 MB and 30 seconds, so valid criteria cannot exhaust the run and force a null result.
+- Refunds: a Funded job (nothing delivered) refunds the client from `expires_at`. A Submitted or Ruling job refunds
+  the client only from `expires_at` plus a grace period (1 hour), so delivered work always gets a window for a ruling,
+  and money can never lock if nobody asks for one.
 - The callback reads the raw promise result bytes (never a typed `#[callback_result]` that could panic on a
   surprise shape). OutLayer returns the guest's JSON as is when the run succeeds, and `null` for any failure.
 - The contract acts on a verdict only if: it parses, `v == 1`, `ch` and `dh` equal the hashes it stored for that job,
