@@ -1,18 +1,21 @@
-//! judge-wasm: a deterministic ERC-8183 job-escrow judge.
+//! judge-wasm: a deterministic job-escrow judge.
 //!
 //! Reads one judge-input JSON object from `input`, runs the deterministic
 //! acceptance checks, and produces a compact verdict JSON exactly as
-//! `../docs/interface.md` (sections 1 to 3) specifies. Ported from Judge
-//! Protocol's MIT JavaScript engine (same author); the JS engine is the oracle
-//! for every accept/reject and pass/fail decision.
+//! `../docs/interface.md` (sections 1 to 3, and 6 for sealed jobs) specifies.
+//! Ported from Judge Protocol's MIT JavaScript engine (same author); the JS engine
+//! is the oracle for every accept/reject and pass/fail decision.
 //!
-//! Determinism: no randomness, clock, env, filesystem or network. The output is
-//! a pure function of the input bytes. Malformed input never panics; it yields a
-//! verdict carrying an `err` code.
+//! Determinism: no randomness, clock, filesystem or network, and the library
+//! reads no environment. The output is a pure function of the input bytes and,
+//! for sealed jobs, the JN_KEY value the caller passes in (main.rs reads it).
+//! Malformed input never panics; it yields a verdict carrying an `err` code.
 
 use sha2::{Digest, Sha256};
 
+mod b64;
 mod engine;
+mod sealed;
 mod shape;
 mod word_ranges;
 
@@ -35,13 +38,16 @@ pub struct Verdict {
     pub ch: String,
     pub dh: String,
     pub checks: Vec<CheckResult>,
-    /// `invalid_input`, `invalid_criteria` or `too_large`, or none for a scored verdict.
+    /// `invalid_input`, `invalid_criteria`, `too_large`, and for sealed jobs
+    /// `key_missing` or `bad_delivery`; none for a scored verdict.
     pub err: Option<String>,
+    /// Sealed jobs only: K sealed to the client's key, present only on a pass.
+    pub k: Option<String>,
 }
 
 // Interface limits (docs/interface.md section 1 and 2). These OVERRIDE the JS
 // engine where they differ (the JS engine allowed 64 checks and http-endpoint).
-const MAX_CRITERIA_BYTES: usize = 4_096;
+pub(crate) const MAX_CRITERIA_BYTES: usize = 4_096;
 const MAX_DELIVERABLE_BYTES: usize = 16_384;
 const MAX_VERDICT_BYTES: usize = 900;
 
@@ -59,11 +65,18 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 }
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-/// Evaluate judge input bytes into a `Verdict`. Never panics.
+/// Evaluate judge input bytes into a `Verdict` (public mode only: no key).
 pub fn evaluate(input: &[u8]) -> Verdict {
-    // Step 1: stdin must be a JSON object with string `criteria` and
-    // `deliverable`. Anything else is `invalid_input`, with ch/dh taken over
-    // whatever string bytes could be read, or the empty string.
+    evaluate_with_key(input, None)
+}
+
+/// Evaluate judge input bytes into a `Verdict`. `jn_key` is the value of the
+/// JN_KEY environment variable, used only by sealed jobs. Never panics.
+pub fn evaluate_with_key(input: &[u8], jn_key: Option<&str>) -> Verdict {
+    // Step 1: stdin must be a JSON object. A `deliverable_ct` field selects sealed
+    // mode (section 6.3). Otherwise it needs string `criteria` and `deliverable`;
+    // anything else is `invalid_input`, with ch/dh taken over whatever string bytes
+    // could be read, or the empty string.
     let value: serde_json::Value = match serde_json::from_slice(input) {
         Ok(v) => v,
         Err(_) => return err_verdict("invalid_input", &sha256_hex(b""), &sha256_hex(b"")),
@@ -72,19 +85,26 @@ pub fn evaluate(input: &[u8]) -> Verdict {
         Some(o) => o,
         None => return err_verdict("invalid_input", &sha256_hex(b""), &sha256_hex(b"")),
     };
+    if obj.contains_key("deliverable_ct") {
+        return sealed::evaluate_sealed(obj, jn_key);
+    }
     let criteria_str = obj.get("criteria").and_then(|v| v.as_str());
     let deliverable_str = obj.get("deliverable").and_then(|v| v.as_str());
-    let (criteria, deliverable) = match (criteria_str, deliverable_str) {
-        (Some(c), Some(d)) => (c, d),
+    match (criteria_str, deliverable_str) {
+        (Some(c), Some(d)) => evaluate_texts(c, d),
         // A field that is missing or not a string: hash what we can, empty for the rest.
         (c, d) => {
             let ch = sha256_hex(c.unwrap_or("").as_bytes());
             let dh = sha256_hex(d.unwrap_or("").as_bytes());
-            return err_verdict("invalid_input", &ch, &dh);
+            err_verdict("invalid_input", &ch, &dh)
         }
-    };
+    }
+}
 
-    // From here on both strings exist, so ch/dh are always their exact bytes.
+/// The verdict over a criteria text and a deliverable text: the size gate, the
+/// criteria gate, then every check. Public mode calls it on the stdin fields;
+/// sealed mode calls it on the decrypted plaintext, so both judge alike.
+pub(crate) fn evaluate_texts(criteria: &str, deliverable: &str) -> Verdict {
     let ch = sha256_hex(criteria.as_bytes());
     let dh = sha256_hex(deliverable.as_bytes());
 
@@ -126,6 +146,7 @@ pub fn evaluate(input: &[u8]) -> Verdict {
         dh,
         checks: results,
         err: None,
+        k: None,
     }
 }
 
@@ -139,7 +160,7 @@ fn check_id(kind: &str, index: usize) -> String {
     id
 }
 
-fn err_verdict(code: &str, ch: &str, dh: &str) -> Verdict {
+pub(crate) fn err_verdict(code: &str, ch: &str, dh: &str) -> Verdict {
     Verdict {
         pass: false,
         score: 0,
@@ -148,6 +169,7 @@ fn err_verdict(code: &str, ch: &str, dh: &str) -> Verdict {
         dh: dh.to_string(),
         checks: Vec::new(),
         err: Some(code.to_string()),
+        k: None,
     }
 }
 
@@ -184,6 +206,11 @@ pub fn render(verdict: &Verdict) -> String {
         s.push_str(code);
         s.push('"');
     }
+    if let Some(k) = &verdict.k {
+        s.push_str(",\"k\":\"");
+        s.push_str(k);
+        s.push('"');
+    }
     // eh = sha256 of the prefix with a closing brace appended.
     let mut with_brace = s.clone();
     with_brace.push('}');
@@ -194,9 +221,14 @@ pub fn render(verdict: &Verdict) -> String {
     s
 }
 
-/// Convenience: evaluate and render in one call.
+/// Convenience: evaluate and render in one call (public mode, no key).
 pub fn run(input: &[u8]) -> String {
-    render(&evaluate(input))
+    run_with_key(input, None)
+}
+
+/// Evaluate with the JN_KEY value (None if unset) and render.
+pub fn run_with_key(input: &[u8], jn_key: Option<&str>) -> String {
+    render(&evaluate_with_key(input, jn_key))
 }
 
 /// True once the rendered verdict would be at most the documented 900 bytes.

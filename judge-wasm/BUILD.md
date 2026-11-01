@@ -40,8 +40,12 @@ Target installed: wasm32-wasip1 (`rustup target list --installed`).
 ## Artifact
 
 - Path: `target/wasm32-wasip1/release/judge.wasm`
-- Size: 161736 bytes
-- SHA-256: `da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1`
+- Size: 182133 bytes
+- SHA-256: `911b8a351d199d003735ceef138647ec8485de8eff197aa909f5db496b92c958`
+- Includes sealed jobs (docs/interface.md section 6.3). Rebuilt from clean with the
+  command above on Nov 2 2026: same hash. All 305 parity vectors and all 42 sealed
+  vectors run through this artifact under wasmtime give the expected verdict text
+  byte for byte (`node scripts/wasm-vectors.mjs`).
 
 This sha256 is the value the escrow contract pins as `WasmUrl.hash`. A different
 rustc or std may shift the bytes, so pin the exact toolchain when publishing it.
@@ -53,11 +57,19 @@ environ_get,environ_sizes_get fd_read,fd_write proc_exit
 ```
 
 No `random_get`, no `clock_time_get`, no network, no `path_open`: the guest is
-deterministic. `environ_*` are read during std's startup only; the judge never
-reads an environment variable, so output does not depend on the environment.
-`fd_read` (stdin), `fd_write` (stdout) and `proc_exit` are the stdin-to-stdout
-contract. uniqueBy uses a BTreeSet, not a HashSet, so RandomState's `random_get`
-is not linked.
+deterministic. The judge reads exactly one environment variable, `JN_KEY` (main.rs,
+passed into the library), and only a sealed stdin uses it; a public stdin gives the
+same verdict whatever the environment holds. `fd_read` (stdin), `fd_write` (stdout)
+and `proc_exit` are the stdin-to-stdout contract. uniqueBy uses a BTreeSet, not a
+HashSet, so RandomState's `random_get` is not linked, and the sealed-mode crates
+(chacha20poly1305, x25519-dalek, hkdf) are built with default features off, so
+getrandom is not in the dependency tree at all.
+
+Check the import section exactly (it parses the module, so any new name fails):
+
+```sh
+node scripts/imports.mjs target/wasm32-wasip1/release/judge.wasm
+```
 
 ## Release profile
 

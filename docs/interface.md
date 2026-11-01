@@ -67,7 +67,8 @@ string.
   `min_ruling_deposit` (also fixed at initialisation). With an adequate deposit OutLayer really runs the judge, so a
   request cannot be used to stall a job.
 - Cost bound: the judge's measured worst case over adversarial but valid inputs (criteria at most 4,096 bytes,
-  deliverable at most 16,384 bytes, at most 16 checks) is about 0.59 billion instructions, 1.75 MB and 21 ms
+  deliverable at most 16,384 bytes, at most 16 checks) is about 0.60 billion instructions (a sealed pass with 16
+  nested checks, 602.5 million), 1.75 MB and 22 ms
   (`judge-wasm/RESOURCE-LIMITS.md`, guarded by `judge-wasm/scripts/fuel-check.sh`). The contract asks OutLayer for
   50 billion instructions, 64 MB and 30 seconds, so valid criteria cannot exhaust the run and force a null result.
 - Refunds: a Funded job (nothing delivered) refunds the client from `expires_at`. A Submitted or Ruling job refunds
@@ -77,8 +78,10 @@ string.
   surprise shape). OutLayer returns the guest's JSON as is when the run succeeds, and `null` for any failure.
 - The contract acts on a verdict only if: it parses, `v == 1`, `ch` and `dh` equal the hashes it stored for that job,
   and the callback's `attempt` number equals the job's current ruling attempt. Then `pass:true` pays the provider and
-  `pass:false` refunds the client. Anything else (null, garbage, mismatch, stale attempt) changes no money and puts
-  the job back to `Submitted` so a ruling can be requested again.
+  `pass:false` refunds the client. Null, garbage, a wrong version, a `ch`/`dh` mismatch, an oversized result or a
+  failed call change no money and return the job to `Submitted`, so a ruling can be requested again. A stale or late
+  callback (its attempt is not the current one, or the job has left `Ruling`, for example refunded after the grace
+  period) changes nothing at all.
 
 ## 5. OutLayer facts this design relies on (read from github.com/out-layer/outlayer at aaf60a2685, Nov 1 2026)
 
@@ -129,11 +132,19 @@ Sealed stdin: `{"criteria": "...", "deliverable_ct": "<base64 C>", "dh": "<64 he
 (the presence of `deliverable_ct` selects sealed mode; `deliverable` must then be absent). The judge reads `JN_KEY`
 from its environment.
 
+The first matching row wins:
+
 | Situation | Verdict |
 |---|---|
-| `JN_KEY` absent or not 64 hex | `pass:false`, `score:0`, `checks:[]`, `err:"key_missing"`, `ch` = sha256(criteria), `dh` = the input `dh` |
-| `C` does not decrypt with `K`, or sha256(plaintext) != input `dh` | `pass:false`, `score:0`, `checks:[]`, `err:"bad_delivery"`, `dh` = the input `dh` |
+| `criteria` or `deliverable_ct` not a string, `deliverable` also present, or `dh` / `client_pk` not exactly 64 lowercase hex | `err:"invalid_input"` |
+| `criteria` over 4,096 bytes or `C` over 21,884 characters (checked before the key is read) | `err:"too_large"` |
+| `JN_KEY` absent or not exactly 64 hex digits (either case, no trimming) | `err:"key_missing"` |
+| `C` not canonical base64, shorter than nonce + tag, failing the tag check, sha256(plaintext) != input `dh`, or plaintext not UTF-8 | `err:"bad_delivery"` |
 | decrypts and matches | the normal verdict over the plaintext (`dh` = sha256(plaintext)); on `pass:true` it adds `k` |
+
+Every error row gives `pass:false`, `score:0`, `checks:[]`, `ch` = sha256(criteria) (of the empty string when
+`criteria` is not a string) and `dh` = the input `dh` (sha256 of the empty string when the input `dh` is malformed).
+The longest legal verdict, a sealed pass with 16 checks, is 897 bytes including `k`, inside the 900-byte limit.
 
 `k` = `K` sealed to `client_pk`, deterministic so the verdict stays reproducible. In the HKDF info strings below,
 `client_pk` is its 32 raw bytes and `ch`, `dh` are their 64-character lowercase hex text; `eph_sk` is used as an
@@ -150,6 +161,8 @@ before it, as in section 3.
 ### 6.4 How the contract treats sealed verdicts
 
 - `create_job(..., client_pk)` marks the job sealed; `submit_sealed(job_id, deliverable_ct, dh)` stores `C` and `dh`.
+  `create_job` refuses a `client_pk` that is a known small-order X25519 point: with such a key the shared secret is
+  all zeros, so anyone could open `k`.
 - `request_ruling` sends the sealed stdin above and `secrets_ref = {"profile": <6.2 profile>, "account_id": provider}`.
 - A pass is applied only if `k` is present and well formed; the contract stores `k` on the job and in the
   `ruling_applied` event in the same callback that pays the provider.

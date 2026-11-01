@@ -1,0 +1,15 @@
+# gitleaks configuration: the default rules, plus one allowlist for test fixtures.
+#
+# The sealed-mode test vectors carry deliberately public test keys. Each one is
+# sha256("judge-near sealed test <label>") (see judge-wasm/scripts/gen-sealed.mjs), so
+# anyone can recompute it, and none of them protects anything real.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public, seeded test keys in the sealed-mode test vectors"
+paths = [
+  '''judge-wasm/vectors/sealed\.json''',
+  '''judge-wasm/vectors/fuel/[^/]+\.test-jn-key''',
+]

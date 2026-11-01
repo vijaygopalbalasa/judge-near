@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Fuel regression guard. Runs the judge over every adversarial corpus file
-# (vectors/fuel/*.json) under a fuel cap equal to the recommended max_instructions,
-# using the same metering OutLayer uses (wasmtime fuel). Fails if any case runs out
-# of fuel or does not print a verdict. Also prints the wall time of each run.
+# (vectors/fuel/*.json) under a fuel cap, using the same metering OutLayer uses
+# (wasmtime fuel). Fails if any case runs out of fuel or does not print a verdict.
+# Also prints the wall time of each run.
+#
+# Sealed cases carry sidecars: NN-name.test-jn-key holds the test JN_KEY (passed as an
+# environment variable, as OutLayer injects it), and NN-name.expect holds text the
+# verdict must contain, so a sealed case cannot quietly fall back to a cheap error.
 #
 # Usage (from judge-wasm/):
 #   scripts/fuel-check.sh [FUEL_CAP] [path/to/judge.wasm]
-# Defaults: FUEL_CAP=3000000000 (the recommended max_instructions),
+# Defaults: FUEL_CAP=3000000000, deliberately far below the 50 billion the escrow
+#           requests, so a regression is caught while the margin is still large;
 #           wasm=target/wasm32-wasip1/release/judge.wasm
 #
 # Build the wasm first (see BUILD.md). Requires wasmtime on PATH.
@@ -34,14 +39,21 @@ count=0
 for f in "$CORPUS"/*.json; do
   count=$((count + 1))
   name="$(basename "$f")"
+  env_args=()
+  if [ -f "${f%.json}.test-jn-key" ]; then env_args=(--env "JN_KEY=$(cat "${f%.json}.test-jn-key")"); fi
+  expect=""
+  if [ -f "${f%.json}.expect" ]; then expect="$(cat "${f%.json}.expect")"; fi
   start=$(date +%s%N)
-  if out="$(wasmtime run -W "fuel=$CAP" "$WASM_PATH" < "$f" 2>"$ERR")"; then
+  if out="$(wasmtime run -W "fuel=$CAP" ${env_args[@]+"${env_args[@]}"} "$WASM_PATH" < "$f" 2>"$ERR")"; then
     ms=$(( ($(date +%s%N) - start) / 1000000 ))
-    if [[ "$out" == '{"v":1'* ]]; then
-      echo "ok    ${ms}ms  $name"
-    else
+    if [[ "$out" != '{"v":1'* ]]; then
       echo "FAIL        $name : output is not a verdict: ${out:0:80}"
       fail=$((fail + 1))
+    elif [ -n "$expect" ] && [[ "$out" != *"$expect"* ]]; then
+      echo "FAIL        $name : verdict lacks the expected $expect"
+      fail=$((fail + 1))
+    else
+      echo "ok    ${ms}ms  $name"
     fi
   else
     echo "FAIL        $name : ran out of fuel or trapped under cap $CAP"

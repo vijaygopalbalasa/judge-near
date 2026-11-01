@@ -62,16 +62,73 @@ fn keys_in_documented_order(out: &str) -> bool {
             _ => return false,
         }
     }
-    if let Some(at) = out.find("\"err\":") {
-        if at < last {
-            return false;
+    // Optional fields in their documented order: err, then k (sealed passes), then eh.
+    for k in ["\"err\":", "\"k\":"] {
+        if let Some(at) = out.find(k) {
+            if at < last {
+                return false;
+            }
+            last = at;
         }
-        last = at;
     }
     match out.find("\"eh\":") {
         Some(at) => at >= last,
         None => false,
     }
+}
+
+/// Standard base64 with padding (test helper).
+fn b64(data: &[u8]) -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// Sealed jobs: the same sweep, encrypted under a fixed test key, so verdicts that
+/// carry k (131 extra bytes) are held to the 900-byte limit and the key order too.
+#[test]
+fn generated_sealed_inputs_always_produce_small_well_formed_verdicts() {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+    use sha2::{Digest, Sha256};
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let key = [0x42u8; 32];
+    let client_pk = x25519_dalek::x25519([0x17u8; 32], x25519_dalek::X25519_BASEPOINT_BYTES);
+    let mut rng = Rng(0xD1B54A32D192ED03);
+    let mut with_k = 0;
+    for i in 0..400 {
+        let count = 1 + rng.below(16) as usize;
+        let checks: Vec<Value> = (0..count).map(|_| random_check(&mut rng)).collect();
+        let mut criteria = json!({ "checks": checks });
+        criteria["passThreshold"] = json!(rng.below(101));
+        let plaintext = rng.pick(&DELIVERABLES).as_bytes();
+        let nonce = [i as u8; 12];
+        let sealed = ChaCha20Poly1305::new(Key::from_slice(&key)).encrypt(Nonce::from_slice(&nonce), plaintext).unwrap();
+        let c = b64(&[nonce.as_slice(), &sealed].concat());
+        let stdin = json!({
+            "criteria": criteria.to_string(),
+            "deliverable_ct": c,
+            "dh": hex(&Sha256::digest(plaintext)),
+            "client_pk": hex(&client_pk),
+        })
+        .to_string();
+        let out = judge_wasm::run_with_key(stdin.as_bytes(), Some(&hex(&key)));
+        assert!(out.len() <= 900, "sealed input #{i} produced {} bytes: {out}", out.len());
+        let parsed: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("sealed #{i} invalid JSON ({e}): {out}"));
+        assert_eq!(parsed["v"].as_i64(), Some(1));
+        assert!(keys_in_documented_order(&out), "sealed #{i}: keys out of order: {out}");
+        assert_eq!(parsed["k"].is_string(), parsed["pass"] == json!(true), "sealed #{i}: k iff pass: {out}");
+        if parsed["k"].is_string() {
+            with_k += 1;
+        }
+    }
+    assert!(with_k >= 40, "only {with_k} sealed passes carried k");
 }
 
 #[test]

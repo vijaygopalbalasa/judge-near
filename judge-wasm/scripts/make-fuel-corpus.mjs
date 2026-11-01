@@ -5,11 +5,18 @@
 // that cost the most instructions; the guard runs the judge over each under the
 // recommended max_instructions and fails if any runs out of fuel.
 //
+// Sealed cases (docs/interface.md section 6.3) are the same heavy inputs encrypted:
+// NN-name.json is the sealed stdin, NN-name.test-jn-key the test JN_KEY (not *.key,
+// which the repo ignores), NN-name.expect text the verdict must contain. Keys are
+// test fixtures from fixed public seeds.
+//
 // Run from judge-wasm/:  node scripts/make-fuel-corpus.mjs
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { encryptDeliverable, publicFromSecret } from "./sealed.mjs";
 
 const MAX_CRITERIA = 4096;
 const MAX_DELIVERABLE = 16384;
@@ -128,4 +135,36 @@ for (const c of cases) {
   console.log(`${name}  criteria ${bytes(cStr)} B, deliverable ${bytes(c.deliverable)} B, ${c.criteria.checks.length} checks`);
   i++;
 }
-console.log(`\nwrote ${i} corpus files to ${dir}`);
+
+// Sealed jobs: decrypt up to 16 KB, run the checks, and on a pass derive k (two
+// X25519 operations). The heavy public inputs above, encrypted, plus the error paths.
+const sha256 = (b) => crypto.createHash("sha256").update(b).digest();
+const seed = (label) => sha256(Buffer.from(`judge-near fuel test ${label}`, "utf8"));
+const FUEL_K = seed("K 1");
+const FUEL_CLIENT_PK = publicFromSecret(seed("client sk 1")).toString("hex");
+const like = (prefix) => cases.find((c) => c.slug.startsWith(prefix));
+const emoji = "\u{1F600}́"; // 6 bytes: an astral code point and a combining mark
+const sealedCases = [
+  { slug: "sealed-pass-json-nested-anyof-x16", criteria: like("json-nested-anyof").criteria, plaintext: like("json-nested-anyof").deliverable, expect: '"k":"' },
+  { slug: "sealed-pass-wholeword-distinct-letters", criteria: like("wholeword-distinct-letters").criteria, plaintext: like("wholeword-distinct-letters").deliverable, expect: '"k":"' },
+  { slug: "sealed-pass-max-plaintext", criteria: { checks: [{ kind: "length", params: { min: 16384, max: 16384, unit: "chars" } }] }, plaintext: "a".repeat(MAX_DELIVERABLE), expect: '"k":"' },
+  { slug: "sealed-pass-unicode-max", criteria: { checks: [{ kind: "length", params: { min: 1, unit: "chars" } }, { kind: "length", params: { min: 1, unit: "words" } }, { kind: "contains", params: { all: ["中"], wholeWords: true } }] }, plaintext: emoji.repeat(Math.floor((MAX_DELIVERABLE - 4) / bytes(emoji))) + " 中", expect: '"k":"' },
+  { slug: "sealed-bad-delivery-max", criteria: { checks: [{ kind: "length" }] }, plaintext: "a".repeat(MAX_DELIVERABLE), key: seed("K 2"), expect: '"err":"bad_delivery"' },
+  { slug: "sealed-key-missing-max", criteria: { checks: [{ kind: "length" }] }, plaintext: "a".repeat(MAX_DELIVERABLE), key: null, expect: '"err":"key_missing"' },
+];
+for (const c of sealedCases) {
+  const cStr = JSON.stringify(c.criteria);
+  const pt = Buffer.from(c.plaintext, "utf8");
+  if (bytes(cStr) > MAX_CRITERIA) throw new Error(`${c.slug}: criteria ${bytes(cStr)} > ${MAX_CRITERIA}`);
+  if (pt.length > MAX_DELIVERABLE) throw new Error(`${c.slug}: plaintext ${pt.length} > ${MAX_DELIVERABLE}`);
+  const C = encryptDeliverable(FUEL_K, pt, sha256(Buffer.from(`judge-near fuel test nonce ${c.slug}`, "utf8")).subarray(0, 12));
+  const stdin = JSON.stringify({ criteria: cStr, deliverable_ct: C, dh: sha256(pt).toString("hex"), client_pk: FUEL_CLIENT_PK });
+  const base = path.join(dir, `${String(i).padStart(2, "0")}-${c.slug}`);
+  fs.writeFileSync(`${base}.json`, stdin);
+  const key = c.key === undefined ? FUEL_K : c.key;
+  if (key) fs.writeFileSync(`${base}.test-jn-key`, key.toString("hex"));
+  fs.writeFileSync(`${base}.expect`, c.expect);
+  console.log(`${path.basename(base)}.json  criteria ${bytes(cStr)} B, plaintext ${pt.length} B, C ${C.length} chars, key ${key ? "yes" : "none"}`);
+  i++;
+}
+console.log(`\nwrote ${i} corpus cases to ${dir}`);

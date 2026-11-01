@@ -6,10 +6,15 @@
 //   - the minimum fuel (-W fuel=N) that lets the run finish,
 //   - the minimum linear memory (-W max-memory-size=N) that lets it finish,
 // and times a normal run. No network; runs only the local wasmtime binary.
+// It then measures the sealed cases of the fuel corpus (vectors/fuel/*sealed*,
+// from make-fuel-corpus.mjs), passing each test JN_KEY as an environment variable.
 //
 // Run from judge-wasm/:  node scripts/measure-limits.mjs [path/to/judge.wasm]
 
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const WASM = process.argv[2] || "target/wasm32-wasip1/release/judge.wasm";
 const MAX_CRITERIA = 4096;
@@ -165,6 +170,25 @@ for (const c of cases) {
   const ms = Math.min(plain.ms, run(stdin).ms, run(stdin).ms);
   rows.push({ name: c.name, cb, db, nChecks, fuel, memKiB: (pages * PAGE) / 1024, ms });
   console.log(`${c.name}\n  criteria ${cb} B, deliverable ${db} B, ${nChecks} checks -> fuel ${fuel.toLocaleString("en-US")}, memory ${(pages * PAGE) / 1024} KiB, ${ms.toFixed(0)} ms`);
+}
+
+// Sealed corpus cases: decrypt up to 16 KB, run the checks, and on a pass derive k.
+const corpus = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vectors", "fuel");
+for (const f of fs.readdirSync(corpus).filter((n) => n.includes("sealed") && n.endsWith(".json")).sort()) {
+  const stdin = fs.readFileSync(path.join(corpus, f));
+  const keyFile = path.join(corpus, f.replace(/\.json$/, ".test-jn-key"));
+  const env = fs.existsSync(keyFile) ? ["--env", `JN_KEY=${fs.readFileSync(keyFile, "utf8")}`] : [];
+  const plain = run(stdin, env);
+  if (!plain.ok) throw new Error(`${f}: run failed: ${plain.out}`);
+  let hi = 1_000_000;
+  while (!run(stdin, [...env, "-W", `fuel=${hi}`]).ok) hi *= 4;
+  const fuel = bisect(Math.floor(hi / 4), hi, (n) => run(stdin, [...env, "-W", `fuel=${n}`]).ok, Math.max(1000, Math.floor(hi / 1000)));
+  const PAGE = 65536;
+  const pages = bisect(1, 1024, (p) => run(stdin, [...env, "-W", `max-memory-size=${p * PAGE}`]).ok, 1);
+  const ms = Math.min(plain.ms, run(stdin, env).ms, run(stdin, env).ms);
+  const outcome = JSON.parse(plain.out).err ?? (plain.out.includes('"k":"') ? "pass with k" : "fail");
+  rows.push({ name: `sealed ${f} (${outcome})`, fuel, memKiB: (pages * PAGE) / 1024, ms });
+  console.log(`sealed ${f} (${outcome})\n  fuel ${fuel.toLocaleString("en-US")}, memory ${(pages * PAGE) / 1024} KiB, ${ms.toFixed(0)} ms`);
 }
 
 const worst = rows.reduce((a, b) => (b.fuel > a.fuel ? b : a));
