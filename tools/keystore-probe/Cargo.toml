@@ -11,6 +11,11 @@ license = "MIT"
 name = "keystore-probe"
 path = "src/main.rs"
 
+[features]
+# A second build with different bytes (and so a different SHA-256), used to show that a
+# secret bound to one build's hash is not handed to another build.
+variant-b = []
+
 [dependencies]
 sha2 = { version = "0.10.9", default-features = false }
 

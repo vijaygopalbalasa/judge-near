@@ -36,8 +36,10 @@ fn main() {
         .iter()
         .map(|(k, h)| format!("{{\"name\":{},\"sha256\":\"{}\"}}", json_str(k), h))
         .collect();
+    let variant = if cfg!(feature = "variant-b") { "b" } else { "a" };
     let out = format!(
-        "{{\"predecessor\":{},\"sender\":{},\"secrets\":[{}]}}",
+        "{{\"build\":\"{}\",\"predecessor\":{},\"sender\":{},\"secrets\":[{}]}}",
+        variant,
         json_str(&pred),
         json_str(&sender),
         list.join(",")
