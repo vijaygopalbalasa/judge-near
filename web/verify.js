@@ -1,0 +1,175 @@
+// Re-run an OutLayer ruling and check it, in a browser or in Node.
+//
+// Given a NEAR transaction that asked OutLayer to run the judge, this module reads the request
+// OutLayer logged (the input and the wasm URL and hash), downloads the wasm, checks its SHA-256
+// against the hash OutLayer was told to run, runs it locally through the WASI host in wasi.js,
+// and compares the local verdict with the one OutLayer returned on chain, field by field. It also
+// recomputes the evidence hash `eh` (docs/interface.md, section 3).
+
+import { runWasi } from "./wasi.js";
+
+export const TESTNET_RPC = "https://rpc.testnet.near.org";
+
+const KEY_ORDER = ["v", "pass", "score", "th", "ch", "dh", "checks", "err", "k"];
+
+export async function sha256Hex(bytes) {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The verdict text in canonical key order, without `eh` (the bytes `eh` is taken over, minus the closing brace). */
+export function canonicalPrefix(verdict) {
+  const parts = [];
+  for (const key of KEY_ORDER) {
+    if (!(key in verdict)) continue;
+    if (key === "checks") {
+      const checks = verdict.checks.map((c) => `{"id":${JSON.stringify(c.id)},"ok":${JSON.stringify(c.ok)}}`);
+      parts.push(`"checks":[${checks.join(",")}]`);
+    } else {
+      parts.push(`${JSON.stringify(key)}:${JSON.stringify(verdict[key])}`);
+    }
+  }
+  return `{${parts.join(",")}`;
+}
+
+/** The evidence hash a verdict should carry: sha256 of the canonical text before `eh`, plus `}`. */
+export async function expectedEh(verdict) {
+  return sha256Hex(new TextEncoder().encode(`${canonicalPrefix(verdict)}}`));
+}
+
+export async function fetchTransaction(txHash, signer, { rpc = TESTNET_RPC, fetchImpl = globalThis.fetch } = {}) {
+  const res = await fetchImpl(rpc, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "verify",
+      method: "tx",
+      params: { tx_hash: txHash, sender_account_id: signer, wait_until: "FINAL" },
+    }),
+  });
+  const body = await res.json();
+  if (body.error) throw new Error(`RPC: ${body.error.cause?.name ?? body.error.message ?? "error"}`);
+  return body.result;
+}
+
+function events(logs, standard) {
+  const out = [];
+  for (const line of logs) {
+    if (!line.startsWith("EVENT_JSON:")) continue;
+    try {
+      const ev = JSON.parse(line.slice("EVENT_JSON:".length));
+      if (!standard || ev.standard === standard) out.push(ev);
+    } catch {
+      // not an event we can read
+    }
+  }
+  return out;
+}
+
+function decodeBase64(b64) {
+  const bin = atob(b64);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+/**
+ * Find the OutLayer request and its result in a transaction.
+ * Returns null when the transaction never asked OutLayer for a run.
+ */
+export function findRuling(tx) {
+  let request = null;
+  let completed = null;
+  let verdictText = null;
+  for (const receipt of tx.receipts_outcome ?? []) {
+    const { logs, status } = receipt.outcome;
+    for (const ev of events(logs, "near-outlayer")) {
+      if (ev.event === "execution_requested" && !request) {
+        request = { ...JSON.parse(ev.data[0].request_data), outlayer: receipt.outcome.executor_id };
+      }
+      if (ev.event === "execution_completed" && !completed) {
+        completed = ev.data[0];
+        if (status && "SuccessValue" in status) verdictText = new TextDecoder().decode(decodeBase64(status.SuccessValue));
+      }
+    }
+  }
+  if (!request) return null;
+  let verdict = null;
+  try {
+    const parsed = verdictText ? JSON.parse(verdictText) : null;
+    if (parsed && typeof parsed === "object" && parsed.v === 1) verdict = parsed;
+  } catch {
+    // OutLayer returned something that is not a verdict
+  }
+  return {
+    requestId: request.request_id,
+    outlayer: request.outlayer,
+    signer: request.sender_id,
+    caller: request.predecessor_id,
+    input: request.input_data_in_state ? null : request.input_data,
+    inputInState: Boolean(request.input_data_in_state),
+    source: request.code_source?.WasmUrl ?? null,
+    secretsRef: request.secrets_ref ?? null,
+    limits: request.resource_limits,
+    completed,
+    verdictText,
+    verdict,
+  };
+}
+
+/** Run the judge bytes on one input; returns the verdict text it prints. */
+export async function runJudge(wasmBytes, input, env = {}) {
+  const module = await WebAssembly.compile(wasmBytes);
+  const { code, stdout } = runWasi(module, { stdin: new TextEncoder().encode(input), env });
+  if (code !== 0) throw new Error(`judge exited with code ${code}`);
+  return new TextDecoder().decode(stdout);
+}
+
+/**
+ * Check one ruling. `wasmBytes` is optional: when absent it is downloaded from the URL OutLayer ran.
+ * Returns {ok, steps:[{id, ok, label, detail}], local, onchain}.
+ */
+export async function verifyRuling(ruling, { wasmBytes, env = {}, fetchImpl = globalThis.fetch } = {}) {
+  const steps = [];
+  const step = (id, ok, label, detail = "") => {
+    steps.push({ id, ok, label, detail });
+    return ok;
+  };
+  const done = (extra = {}) => ({ ok: steps.every((s) => s.ok), steps, ...extra });
+
+  if (!step("source", Boolean(ruling.source), "The request names a wasm by URL and SHA-256", ruling.source ? ruling.source.url : "no WasmUrl source in the request")) return done();
+  if (!step("result", Boolean(ruling.verdict), "OutLayer returned a verdict on chain", ruling.verdict ? "" : `returned: ${ruling.verdictText ?? "nothing"}`)) return done();
+  if (!step("input", ruling.input !== null, "The judge's input is in OutLayer's request log", ruling.inputInState ? "OutLayer kept this input in contract state; read it from the escrow job instead" : "")) return done();
+  if (ruling.secretsRef && !env.JN_KEY) {
+    step("key", false, "Sealed job: the deliverable key is needed to re-run it", "only the client (after opening k) or the provider holds it");
+    return done();
+  }
+
+  let bytes = wasmBytes;
+  if (!bytes) {
+    const res = await fetchImpl(ruling.source.url);
+    if (!step("download", res.ok, "Downloaded the judge from the URL OutLayer ran", `HTTP ${res.status}`)) return done();
+    bytes = new Uint8Array(await res.arrayBuffer());
+  }
+  const hash = await sha256Hex(bytes);
+  if (!step("hash", hash === ruling.source.hash, "Its SHA-256 equals the hash OutLayer was told to run", hash)) return done();
+
+  const localText = await runJudge(bytes, ruling.input, env);
+  const local = JSON.parse(localText);
+  step("rerun", true, "Re-ran the judge here on the same input", localText);
+
+  const same = canonicalPrefix(local) === canonicalPrefix(ruling.verdict) && local.eh === ruling.verdict.eh;
+  step("match", same, "The local verdict equals the on-chain verdict, field by field", same ? `pass: ${local.pass}, score: ${local.score}` : `on chain: ${ruling.verdictText}`);
+
+  const eh = await expectedEh(local);
+  step("eh", eh === local.eh && eh === ruling.verdict.eh, "The evidence hash eh recomputes from the verdict fields", eh);
+  return done({ local, onchain: ruling.verdict });
+}
+
+/** Fetch a transaction and verify the ruling in it. */
+export async function verifyTransaction(txHash, signer, options = {}) {
+  const tx = await fetchTransaction(txHash, signer, options);
+  const ruling = findRuling(tx);
+  if (!ruling) return { ok: false, steps: [{ id: "find", ok: false, label: "This transaction did not ask OutLayer to run anything", detail: "" }] };
+  const report = await verifyRuling(ruling, options);
+  return { ...report, ruling };
+}

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Judge on NEAR: verify a ruling</title>
+  <link rel="icon" href="data:,">
+  <meta name="description" content="Re-run any Judge on NEAR ruling in your browser: download the exact wasm OutLayer ran, check its SHA-256, run it on the same input and compare verdicts.">
+  <style>
+    :root {
+      --bg: #fbfaf7; --panel: #ffffff; --ink: #1d1d1b; --muted: #5d5d58; --line: #e3e1da;
+      --ok: #1f7a4d; --bad: #b3261e; --accent: #2d5bd7; --code: #f3f1ea;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #a9a8a1; --line: #34332f;
+        --ok: #5cc98f; --bad: #f2867d; --accent: #8fb0ff; --code: #262522;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 1.75rem; margin: 0 0 6px; letter-spacing: -0.01em; }
+    h2 { font-size: 1.15rem; margin: 0 0 12px; }
+    p.lead { color: var(--muted); margin: 0 0 28px; }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    label { display: block; font-weight: 600; margin: 12px 0 4px; font-size: 0.92rem; }
+    input, textarea { width: 100%; font: 0.92rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+    textarea { min-height: 96px; resize: vertical; }
+    button { margin-top: 14px; font: 600 0.95rem system-ui, sans-serif; padding: 10px 18px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: progress; }
+    ol.steps { list-style: none; padding: 0; margin: 16px 0 0; }
+    ol.steps li { padding: 10px 0; border-top: 1px solid var(--line); }
+    ol.steps li .mark { display: inline-block; width: 1.4em; font-weight: 700; }
+    ol.steps li.ok .mark { color: var(--ok); }
+    ol.steps li.bad .mark { color: var(--bad); }
+    .detail { display: block; margin: 4px 0 0 1.4em; color: var(--muted); font: 0.82rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .verdict { margin-top: 14px; padding: 12px; background: var(--code); border-radius: 8px; font: 0.82rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .summary { margin-top: 14px; font-weight: 700; }
+    .summary.ok { color: var(--ok); } .summary.bad { color: var(--bad); }
+    footer { color: var(--muted); font-size: 0.88rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Verify a Judge on NEAR ruling</h1>
+  <p class="lead">Paste a NEAR testnet transaction that asked OutLayer to run the judge. This page downloads the exact
+    wasm OutLayer ran, checks its SHA-256, runs it here on the same input, and compares the verdict with the one on chain.
+    Nothing is sent anywhere except read requests to the NEAR RPC and the wasm URL.</p>
+
+  <section>
+    <h2>1. Re-run a ruling from a transaction</h2>
+    <form id="tx-form">
+      <label for="tx">Transaction hash</label>
+      <input id="tx" required value="4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk" autocomplete="off" spellcheck="false">
+      <label for="signer">Account that signed it</label>
+      <input id="signer" required value="judgeprotocol.testnet" autocomplete="off" spellcheck="false">
+      <label for="key">Sealed jobs only: the deliverable key (64 hex), after the client opened it</label>
+      <input id="key" placeholder="leave empty for public jobs" autocomplete="off" spellcheck="false">
+      <button id="tx-go" type="submit">Verify this ruling</button>
+    </form>
+    <div id="tx-summary" class="summary" role="status" aria-live="polite"></div>
+    <ol id="tx-steps" class="steps"></ol>
+  </section>
+
+  <section>
+    <h2>2. Run the judge on your own job</h2>
+    <form id="run-form">
+      <label for="criteria">Criteria (JSON)</label>
+      <textarea id="criteria" spellcheck="false">{"checks":[{"kind":"length","params":{"min":3,"max":40}}]}</textarea>
+      <label for="deliverable">Deliverable</label>
+      <textarea id="deliverable" spellcheck="false">Hello NEAR, this is a test delivery.</textarea>
+      <button id="run-go" type="submit">Run the judge here</button>
+    </form>
+    <div id="run-summary" class="summary" role="status" aria-live="polite"></div>
+    <div id="run-out" class="verdict" hidden></div>
+  </section>
+
+  <footer>
+    <p>The judge is <code>judge-wasm/release/judge.wasm</code> in
+      <a href="https://github.com/vijaygopalbalasa/judge-near">github.com/vijaygopalbalasa/judge-near</a>;
+      the verdict format and the evidence hash are defined in <code>docs/interface.md</code>. The WASI host that runs it
+      here is <code>web/wasi.js</code>, about 100 lines.</p>
+  </footer>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
