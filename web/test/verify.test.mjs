@@ -49,7 +49,43 @@ test("findRuling reads the request and the verdict from a real OutLayer transact
 test("verifyRuling accepts the real ruling when given the published wasm", async () => {
   const report = await verifyRuling(findRuling(tx), { wasmBytes: judge });
   assert.equal(report.ok, true, JSON.stringify(report.steps, null, 1));
-  assert.deepEqual(report.steps.map((s) => s.id), ["source", "result", "input", "hash", "rerun", "match", "eh"]);
+  assert.deepEqual(report.steps.map((s) => s.id), ["source", "published", "result", "input", "hash", "rerun", "match", "eh"]);
+});
+
+test("verifyRuling checks the signer when one is given", async () => {
+  const good = await verifyRuling(findRuling(tx), { wasmBytes: judge, signer: "judgeprotocol.testnet" });
+  assert.equal(good.ok, true);
+  const bad = await verifyRuling(findRuling(tx), { wasmBytes: judge, signer: "someone-else.testnet" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.steps[0].id, "signer");
+});
+
+test("look-alike OutLayer events from any other contract are ignored", () => {
+  const forgedTx = structuredClone(tx);
+  for (const r of forgedTx.receipts_outcome) {
+    if (r.outcome.executor_id === "outlayer.testnet") r.outcome.executor_id = "fake-outlayer.testnet";
+  }
+  assert.equal(findRuling(forgedTx), null);
+});
+
+test("a ruling by a wasm that is not a published judge is not verified, even if it re-runs", async () => {
+  const r = findRuling(tx);
+  const otherHash = await sha256Hex(probe);
+  const report = await verifyRuling({ ...r, source: { ...r.source, hash: otherHash } }, { wasmBytes: probe });
+  assert.equal(report.ok, false);
+  assert.equal(report.steps.find((s) => s.id === "published").ok, false);
+});
+
+test("the key is passed only for a sealed ruling, and only after the hash checks out", async () => {
+  const seen = [];
+  const spy = async (bytes, input, env) => {
+    seen.push(env);
+    return runJudge(bytes, input);
+  };
+  await verifyRuling(findRuling(tx), { wasmBytes: judge, env: { JN_KEY: "ab".repeat(32) }, runner: spy });
+  assert.deepEqual(seen.at(-1), {}, "a public ruling never receives the key");
+  await verifyRuling(findRuling(tx), { wasmBytes: probe, env: { JN_KEY: "ab".repeat(32) }, runner: spy });
+  assert.equal(seen.length, 1, "a wasm with the wrong hash is never run");
 });
 
 test("verifyRuling rejects a verdict that was changed after the fact", async () => {

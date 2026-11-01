@@ -10,6 +10,14 @@ import { runWasi } from "./wasi.js";
 
 export const TESTNET_RPC = "https://rpc.testnet.near.org";
 
+/** Only receipts executed by OutLayer's own contracts count; any contract can write a log that looks like theirs. */
+export const OUTLAYER_ACCOUNTS = new Set(["outlayer.testnet", "outlayer.near"]);
+
+/** Judge builds published in this repository (judge-wasm/release). A ruling by any other wasm is not a Judge on NEAR ruling. */
+export const PUBLISHED_JUDGES = new Map([
+  ["da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1", "judge v1 (public jobs), commit e09c6f9"],
+]);
+
 const KEY_ORDER = ["v", "pass", "score", "th", "ch", "dh", "checks", "err", "k"];
 
 export async function sha256Hex(bytes) {
@@ -81,10 +89,11 @@ export function findRuling(tx) {
   let completed = null;
   let verdictText = null;
   for (const receipt of tx.receipts_outcome ?? []) {
-    const { logs, status } = receipt.outcome;
+    const { logs, status, executor_id: executor } = receipt.outcome;
+    if (!OUTLAYER_ACCOUNTS.has(executor)) continue;
     for (const ev of events(logs, "near-outlayer")) {
       if (ev.event === "execution_requested" && !request) {
-        request = { ...JSON.parse(ev.data[0].request_data), outlayer: receipt.outcome.executor_id };
+        request = { ...JSON.parse(ev.data[0].request_data), outlayer: executor };
       }
       if (ev.event === "execution_completed" && !completed) {
         completed = ev.data[0];
@@ -128,7 +137,7 @@ export async function runJudge(wasmBytes, input, env = {}) {
  * Check one ruling. `wasmBytes` is optional: when absent it is downloaded from the URL OutLayer ran.
  * Returns {ok, steps:[{id, ok, label, detail}], local, onchain}.
  */
-export async function verifyRuling(ruling, { wasmBytes, env = {}, fetchImpl = globalThis.fetch } = {}) {
+export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner = runJudge, fetchImpl = globalThis.fetch } = {}) {
   const steps = [];
   const step = (id, ok, label, detail = "") => {
     steps.push({ id, ok, label, detail });
@@ -136,7 +145,10 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, fetchImpl = gl
   };
   const done = (extra = {}) => ({ ok: steps.every((s) => s.ok), steps, ...extra });
 
+  if (signer !== undefined && !step("signer", ruling.signer === signer, "OutLayer recorded the request for the account you entered", `recorded signer: ${ruling.signer}`)) return done();
   if (!step("source", Boolean(ruling.source), "The request names a wasm by URL and SHA-256", ruling.source ? ruling.source.url : "no WasmUrl source in the request")) return done();
+  const published = PUBLISHED_JUDGES.get(ruling.source.hash);
+  if (!step("published", Boolean(published), "That hash is a published Judge on NEAR build", published ?? `unknown hash ${ruling.source.hash}: not a Judge on NEAR ruling`)) return done();
   if (!step("result", Boolean(ruling.verdict), "OutLayer returned a verdict on chain", ruling.verdict ? "" : `returned: ${ruling.verdictText ?? "nothing"}`)) return done();
   if (!step("input", ruling.input !== null, "The judge's input is in OutLayer's request log", ruling.inputInState ? "OutLayer kept this input in contract state; read it from the escrow job instead" : "")) return done();
   if (ruling.secretsRef && !env.JN_KEY) {
@@ -153,7 +165,8 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, fetchImpl = gl
   const hash = await sha256Hex(bytes);
   if (!step("hash", hash === ruling.source.hash, "Its SHA-256 equals the hash OutLayer was told to run", hash)) return done();
 
-  const localText = await runJudge(bytes, ruling.input, env);
+  // The key only ever goes to a published judge build whose bytes were just checked.
+  const localText = await runner(bytes, ruling.input, ruling.secretsRef ? env : {});
   const local = JSON.parse(localText);
   step("rerun", true, "Re-ran the judge here on the same input", localText);
 
@@ -170,6 +183,6 @@ export async function verifyTransaction(txHash, signer, options = {}) {
   const tx = await fetchTransaction(txHash, signer, options);
   const ruling = findRuling(tx);
   if (!ruling) return { ok: false, steps: [{ id: "find", ok: false, label: "This transaction did not ask OutLayer to run anything", detail: "" }] };
-  const report = await verifyRuling(ruling, options);
+  const report = await verifyRuling(ruling, { ...options, signer });
   return { ...report, ruling };
 }
