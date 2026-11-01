@@ -107,6 +107,26 @@ fn too_large_takes_priority_over_criteria_parsing() {
 }
 
 #[test]
+fn a_term_keeps_separate_answers_for_plain_and_whole_word_matching() {
+    // "Arc" is a substring of "Architecture" but not a whole word there. The
+    // judge memoizes term results per evaluation; the plain and whole-word
+    // answers must never be mixed up, whichever is computed first.
+    let text = "A software Architecture paid in USDC.";
+    for (first_whole, second_whole) in [(false, true), (true, false)] {
+        let criteria = serde_json::json!({ "passThreshold": 0, "checks": [
+            { "kind": "contains", "params": { "all": ["Arc", "Arc"], "wholeWords": first_whole } },
+            { "kind": "contains", "params": { "all": ["Arc"], "wholeWords": second_whole } },
+        ] })
+        .to_string();
+        let stdin = serde_json::json!({ "criteria": criteria, "deliverable": text }).to_string();
+        let out = parse(&run(stdin.as_bytes()));
+        let checks = out["checks"].as_array().unwrap();
+        assert_eq!(checks[0]["ok"].as_bool(), Some(!first_whole), "first check, whole={first_whole}");
+        assert_eq!(checks[1]["ok"].as_bool(), Some(!second_whole), "second check, whole={second_whole}");
+    }
+}
+
+#[test]
 fn invalid_criteria_err_shape_matches_the_interface_example() {
     // Empty checks -> invalid_criteria, with the exact documented field shape.
     let stdin = serde_json::json!({ "criteria": r#"{"checks":[]}"#, "deliverable": "x" }).to_string();

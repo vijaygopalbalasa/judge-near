@@ -5,10 +5,9 @@
 //! all (so any such check makes the criteria invalid).
 
 use crate::shape::{matches_shape, shape_valid};
-use crate::{
-    has_whole_word, js_typeof, sha256_hex, utf16_len, word_count,
-};
+use crate::{js_typeof, utf16_len, word_count, TextIndex};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
 // LIMITS (interface overrides noted).
 const MAX_CHECKS: usize = 16; // interface: 16 (JS LIMITS.checks was 64)
@@ -261,8 +260,84 @@ pub(crate) fn has_proto_member(value: &Value) -> bool {
 
 // --------------------------------- checkers --------------------------------
 
-/// Run one check against the deliverable text; returns its pass flag.
-pub(crate) fn run_check(kind: &str, params: &Value, deliverable: &str) -> bool {
+/// Everything derived from the deliverable, computed at most once per
+/// evaluation however many checks need it. All of it is a pure function of the
+/// deliverable, so caching changes cost, never results. BTreeMap, not HashMap:
+/// a HashMap's RandomState would link the WASI `random_get` import.
+pub(crate) struct Ctx<'a> {
+    text: &'a str,
+    /// sha256 of the deliverable bytes: the verdict's `dh`, reused by checksum.
+    dh: &'a str,
+    index: Option<TextIndex>,
+    json: Option<Option<Value>>,
+    whole_memo: BTreeMap<String, bool>,
+    plain_memo: BTreeMap<String, bool>,
+    words: Option<usize>,
+    units: Option<usize>,
+}
+
+impl<'a> Ctx<'a> {
+    pub(crate) fn new(text: &'a str, dh: &'a str) -> Self {
+        Ctx {
+            text,
+            dh,
+            index: None,
+            json: None,
+            whole_memo: BTreeMap::new(),
+            plain_memo: BTreeMap::new(),
+            words: None,
+            units: None,
+        }
+    }
+
+    fn index(&mut self) -> &TextIndex {
+        let text = self.text;
+        self.index.get_or_insert_with(|| TextIndex::new(text))
+    }
+
+    /// The deliverable parsed as JSON, or None if it is not valid JSON.
+    fn json(&mut self) -> Option<&Value> {
+        let text = self.text;
+        self.json
+            .get_or_insert_with(|| serde_json::from_str(text).ok())
+            .as_ref()
+    }
+
+    fn contains_term(&mut self, term: &str, whole: bool) -> bool {
+        let cached = if whole {
+            self.whole_memo.get(term)
+        } else {
+            self.plain_memo.get(term)
+        };
+        if let Some(&r) = cached {
+            return r;
+        }
+        let r = if whole {
+            self.index().has_whole_word(term)
+        } else {
+            self.text.contains(term)
+        };
+        if whole {
+            self.whole_memo.insert(term.to_string(), r);
+        } else {
+            self.plain_memo.insert(term.to_string(), r);
+        }
+        r
+    }
+
+    fn word_count(&mut self) -> usize {
+        let text = self.text;
+        *self.words.get_or_insert_with(|| word_count(text))
+    }
+
+    fn utf16_len(&mut self) -> usize {
+        let text = self.text;
+        *self.units.get_or_insert_with(|| utf16_len(text))
+    }
+}
+
+/// Run one check against the deliverable; returns its pass flag.
+pub(crate) fn run_check(kind: &str, params: &Value, ctx: &mut Ctx) -> bool {
     match kind {
         "checksum" => {
             let expected = params
@@ -270,20 +345,20 @@ pub(crate) fn run_check(kind: &str, params: &Value, deliverable: &str) -> bool {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            sha256_hex(deliverable.as_bytes()) == expected
+            ctx.dh == expected
         }
-        "schema" => check_schema(params, deliverable),
-        "contains" => check_contains(params, deliverable),
-        "length" => check_length(params, deliverable),
-        "json" => check_json(params, deliverable),
+        "schema" => check_schema(params, ctx),
+        "contains" => check_contains(params, ctx),
+        "length" => check_length(params, ctx),
+        "json" => check_json(params, ctx),
         _ => false,
     }
 }
 
-fn check_schema(params: &Value, deliverable: &str) -> bool {
-    let value: Value = match serde_json::from_str(deliverable) {
-        Ok(v) => v,
-        Err(_) => return false,
+fn check_schema(params: &Value, ctx: &mut Ctx) -> bool {
+    let value = match ctx.json() {
+        Some(v) => v,
+        None => return false,
     };
     let obj = match value.as_object() {
         Some(o) => o,
@@ -310,17 +385,12 @@ fn check_schema(params: &Value, deliverable: &str) -> bool {
     true
 }
 
-fn check_contains(params: &Value, deliverable: &str) -> bool {
+fn check_contains(params: &Value, ctx: &mut Ctx) -> bool {
     let whole = params.get("wholeWords") == Some(&Value::Bool(true));
     if let Some(all) = params.get("all").and_then(|v| v.as_array()) {
         for t in all {
             if let Some(term) = t.as_str() {
-                let found = if whole {
-                    has_whole_word(deliverable, term)
-                } else {
-                    deliverable.contains(term)
-                };
-                if !found {
+                if !ctx.contains_term(term, whole) {
                     return false;
                 }
             }
@@ -329,12 +399,12 @@ fn check_contains(params: &Value, deliverable: &str) -> bool {
     true
 }
 
-fn check_length(params: &Value, deliverable: &str) -> bool {
+fn check_length(params: &Value, ctx: &mut Ctx) -> bool {
     let unit_chars = params.get("unit").and_then(|v| v.as_str()) == Some("chars");
     let n = if unit_chars {
-        utf16_len(deliverable)
+        ctx.utf16_len()
     } else {
-        word_count(deliverable)
+        ctx.word_count()
     } as f64;
     let min = params
         .get("min")
@@ -349,14 +419,14 @@ fn check_length(params: &Value, deliverable: &str) -> bool {
     n >= min && n <= max
 }
 
-fn check_json(params: &Value, deliverable: &str) -> bool {
-    let value: Value = match serde_json::from_str(deliverable) {
-        Ok(v) => v,
-        Err(_) => return false,
+fn check_json(params: &Value, ctx: &mut Ctx) -> bool {
+    let value = match ctx.json() {
+        Some(v) => v,
+        None => return false,
     };
     match params.get("shape") {
         None | Some(Value::Null) => true,
-        Some(shape) => matches_shape(&value, shape),
+        Some(shape) => matches_shape(value, shape),
     }
 }
 

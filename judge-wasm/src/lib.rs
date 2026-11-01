@@ -104,11 +104,13 @@ pub fn evaluate(input: &[u8]) -> Verdict {
         None => return err_verdict("invalid_criteria", &ch, &dh),
     };
 
-    // Step 4: run every check on the deliverable and score it.
+    // Step 4: run every check on the deliverable and score it. One context per
+    // evaluation, so the deliverable is indexed and parsed at most once.
+    let mut ctx = engine::Ctx::new(deliverable, &dh);
     let mut results = Vec::with_capacity(prepared.checks.len());
     let mut weighted: Vec<(bool, f64)> = Vec::with_capacity(prepared.checks.len());
     for (i, c) in prepared.checks.iter().enumerate() {
-        let ok = engine::run_check(&c.kind, &c.params, deliverable);
+        let ok = engine::run_check(&c.kind, &c.params, &mut ctx);
         results.push(CheckResult {
             id: check_id(&c.kind, i),
             ok,
@@ -270,25 +272,78 @@ pub(crate) fn is_word_code_point(cp: u32) -> bool {
 }
 
 /// `term` occurs in `text` with a non-word code point (or an edge) on each side.
-/// This is the code-point reference from the JS test suite, which the JS scan is
-/// proven equal to; for valid Unicode (all we can receive via JSON) it is exact.
+/// Test convenience; the engine builds one `TextIndex` per deliverable.
+#[cfg(test)]
 pub(crate) fn has_whole_word(text: &str, term: &str) -> bool {
-    let t: Vec<char> = text.chars().collect();
-    let w: Vec<char> = term.chars().collect();
-    if w.len() > t.len() {
-        return false;
+    TextIndex::new(text).has_whole_word(term)
+}
+
+/// A deliverable's code points and their word flags, computed once so that every
+/// whole-word term costs O(n + m) instead of a table lookup per position per
+/// term. Results equal the code-point reference from the JS test suite (which
+/// the JS scan is proven equal to); a differential test holds them together.
+pub(crate) struct TextIndex {
+    chars: Vec<char>,
+    word: Vec<bool>,
+}
+
+impl TextIndex {
+    pub(crate) fn new(text: &str) -> Self {
+        let chars: Vec<char> = text.chars().collect();
+        let word = chars.iter().map(|&c| is_word_code_point(c as u32)).collect();
+        TextIndex { chars, word }
     }
-    let last = t.len() - w.len();
-    for i in 0..=last {
-        if t[i..i + w.len()] == w[..] {
-            let left_ok = i == 0 || !is_word_code_point(t[i - 1] as u32);
-            let right_ok = i + w.len() == t.len() || !is_word_code_point(t[i + w.len()] as u32);
-            if left_ok && right_ok {
-                return true;
+
+    /// No word character touches the span [start, start + len) on either side.
+    fn boundary_ok(&self, start: usize, len: usize) -> bool {
+        let n = self.chars.len();
+        let left_ok = start == 0 || !self.word[start - 1];
+        let right_ok = start + len == n || !self.word[start + len];
+        left_ok && right_ok
+    }
+
+    /// True if any occurrence of `term`, overlapping ones included, stands as a
+    /// whole word. Knuth-Morris-Pratt: one pass over the text per term.
+    pub(crate) fn has_whole_word(&self, term: &str) -> bool {
+        let w: Vec<char> = term.chars().collect();
+        let n = self.chars.len();
+        let m = w.len();
+        if m > n {
+            return false;
+        }
+        if m == 0 {
+            // The empty term occurs at every position 0..=n.
+            return (0..=n).any(|i| self.boundary_ok(i, 0));
+        }
+        // fail[q] = length of the longest proper border of w[..=q].
+        let mut fail = vec![0usize; m];
+        let mut k = 0usize;
+        for q in 1..m {
+            while k > 0 && w[q] != w[k] {
+                k = fail[k - 1];
+            }
+            if w[q] == w[k] {
+                k += 1;
+            }
+            fail[q] = k;
+        }
+        let mut q = 0usize; // chars of w matched so far (always < m here)
+        for (i, &c) in self.chars.iter().enumerate() {
+            while q > 0 && c != w[q] {
+                q = fail[q - 1];
+            }
+            if c == w[q] {
+                q += 1;
+            }
+            if q == m {
+                if self.boundary_ok(i + 1 - m, m) {
+                    return true;
+                }
+                q = fail[m - 1]; // keep going: occurrences may overlap
             }
         }
+        false
     }
-    false
 }
 
 /// json-shape `typeOf`: null -> "null", array -> "array", a number that
