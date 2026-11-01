@@ -92,3 +92,74 @@ string.
 - Testnet pricing (`get_pricing`): base fee 0.001 NEAR, plus a fee per million instructions, per millisecond of run
   time and per millisecond of compilation. `estimate_execution_cost` gives the deposit. Unused deposit is refunded to
   `payer_account_id`.
+
+## 6. Sealed jobs (the deliverable stays encrypted until it passes)
+
+A sealed job solves the "show me the work first" problem: the client never sees a failing delivery, and the
+worker is paid for a passing one in the same step that hands the client the key.
+
+### 6.1 Keys and ciphertext
+
+- `K`: 32 random bytes chosen by the provider for this job. Never leaves the provider's machine in readable form.
+- Deliverable ciphertext `C` = `nonce(12) | ChaCha20-Poly1305(K, nonce, plaintext) | tag(16)`, standard base64.
+  Plaintext is the UTF-8 deliverable, at most 16,384 bytes, so `C` is at most 21,884 base64 characters.
+- `dh` = lowercase hex SHA-256 of the plaintext bytes (the provider commits to it at submit).
+- Client key `client_pk`: an X25519 public key, 64 lowercase hex characters, fixed when the job is created.
+
+### 6.2 Getting K to the judge, and only to the judge
+
+The provider stores `{"JN_KEY": "<64 hex of K>"}` as an OutLayer secret:
+
+- accessor `{"WasmHash": {"hash": <judge sha256>}}`, owner = the provider, `vault_id: null`;
+- profile = `jn-<first 16 hex of sha256(escrow account id)>-<job id>` (the escrow exposes it as a view, and is the
+  only one that ever names it in `secrets_ref`, so a client cannot point a job at another job's key);
+- access `{"Logic": {"operator": "And", "conditions": [{"WasmHash": {"hash": <judge sha256>}},
+  {"Predecessor": {"condition": {"Whitelist": {"accounts": [<escrow account>]}}}}]}}`;
+- encrypted locally to the key the coordinator returns for `POST /secrets/pubkey` with
+  `{"accessor": {"type": "WasmHash", "hash": ...}, "owner": <provider>, "profile": ..., "secrets_json": "{}"}`
+  (ECIES v1: X25519, HKDF-SHA256 with info `outlayer-keystore-v1`, ChaCha20-Poly1305, wire
+  `0x01 | ephemeral public key(32) | nonce(12) | ciphertext | tag(16)`). The plaintext secret is never sent anywhere.
+
+So only this exact judge build, running because the escrow asked, can read `K`. A provider who stores a weaker
+rule only exposes their own work. Verified on testnet on Nov 1 2026 with `tools/keystore-probe` (see README).
+
+### 6.3 Judge input and behavior
+
+Sealed stdin: `{"criteria": "...", "deliverable_ct": "<base64 C>", "dh": "<64 hex>", "client_pk": "<64 hex>"}`
+(the presence of `deliverable_ct` selects sealed mode; `deliverable` must then be absent). The judge reads `JN_KEY`
+from its environment.
+
+| Situation | Verdict |
+|---|---|
+| `JN_KEY` absent or not 64 hex | `pass:false`, `score:0`, `checks:[]`, `err:"key_missing"`, `ch` = sha256(criteria), `dh` = the input `dh` |
+| `C` does not decrypt with `K`, or sha256(plaintext) != input `dh` | `pass:false`, `score:0`, `checks:[]`, `err:"bad_delivery"`, `dh` = the input `dh` |
+| decrypts and matches | the normal verdict over the plaintext (`dh` = sha256(plaintext)); on `pass:true` it adds `k` |
+
+`k` = `K` sealed to `client_pk`, deterministic so the verdict stays reproducible. In the HKDF info strings below,
+`client_pk` is its 32 raw bytes and `ch`, `dh` are their 64-character lowercase hex text; `eph_sk` is used as an
+X25519 secret scalar (RFC 7748 clamping applies):
+`eph_sk` = HKDF-SHA256(ikm `K`, no salt, info `judge-near-k-eph-v1` + `client_pk` bytes + `ch` + `dh`, 32 bytes);
+`shared` = X25519(`eph_sk`, `client_pk`); `sym` = HKDF-SHA256(ikm `shared`, no salt, info `judge-near-k-v1`, 32 bytes);
+`nonce` = first 12 bytes of HKDF-SHA256(ikm `K`, no salt, info `judge-near-k-nonce-v1` + `client_pk` bytes + `ch` + `dh`);
+`k` = base64(`0x01 | X25519(eph_sk, basepoint) | nonce | ChaCha20-Poly1305(sym, nonce, K) | tag`), 124 characters.
+The client recomputes `shared` with its secret key, recovers `K`, then decrypts `C`.
+
+Key order with the optional fields: `v, pass, score, th, ch, dh, checks, err?, k?, eh`; `eh` covers everything
+before it, as in section 3.
+
+### 6.4 How the contract treats sealed verdicts
+
+- `create_job(..., client_pk)` marks the job sealed; `submit_sealed(job_id, deliverable_ct, dh)` stores `C` and `dh`.
+- `request_ruling` sends the sealed stdin above and `secrets_ref = {"profile": <6.2 profile>, "account_id": provider}`.
+- A pass is applied only if `k` is present and well formed; the contract stores `k` on the job and in the
+  `ruling_applied` event in the same callback that pays the provider.
+- `err:"key_missing"` moves no money and returns the job to Submitted (the provider can store the key and the job can
+  be ruled again; if nobody fixes it, the client is refunded after expiry plus grace). Every other verdict that
+  passes the `ch`/`dh`/attempt checks is applied as written (`pass:false`, including `bad_delivery`, refunds the client).
+- Per-check results are public on chain even for sealed jobs. The deliverable and `K` are not.
+
+### 6.5 OutLayer detail that matters here
+
+With `response_format: "Json"` OutLayer re-serializes the judge's stdout, so the callback sees the same fields with
+keys sorted alphabetically. Parse by field name; `eh` is still defined over the canonical order of section 3, which a
+verifier rebuilds from the fields.
