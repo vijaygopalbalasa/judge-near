@@ -1,0 +1,29 @@
+[package]
+name = "mock-outlayer"
+description = "Test double for OutLayer request_execution, returns configurable raw bytes"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+rust-version = "1.95"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "5.30"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(near)']
+
+# Empty workspace table detaches this nested crate from the parent package,
+# so `cargo near build` in ../ never tries to pull it into one build.
+[workspace]
