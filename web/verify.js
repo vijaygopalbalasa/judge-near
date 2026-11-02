@@ -283,6 +283,26 @@ export function summarizeTx(tx) {
   return { hash: t.hash, signer: t.signer_id, receiver: t.receiver_id, actions, status: failed ? "failure" : "success", failure: failed ? JSON.stringify(status.Failure) : undefined, receipts, outlayer };
 }
 
+/**
+ * A call's JSON arguments made readable: JSON nested inside strings (OutLayer's input_data, the criteria in it) is
+ * opened, up to three levels, and strings over 200 characters (a ciphertext) are shortened.
+ */
+export function expandJson(value, depth = 0) {
+  if (typeof value === "string") {
+    if (depth < 3 && /^\s*[[{]/.test(value)) {
+      try {
+        return expandJson(JSON.parse(value), depth + 1);
+      } catch {
+        // a string that only looks like JSON
+      }
+    }
+    return value.length > 200 ? `${value.slice(0, 64)}... (${value.length} characters)` : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => expandJson(v, depth));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, expandJson(v, depth)]));
+  return value;
+}
+
 /** Run the judge bytes on one input; returns the verdict text it prints. */
 export async function runJudge(wasmBytes, input, env = {}) {
   const module = await WebAssembly.compile(wasmBytes);
@@ -318,6 +338,12 @@ async function checkWithoutKey(input, verdict, step) {
   step("eh", eh === verdict.eh, "The evidence hash eh recomputes from the on-chain verdict", eh);
 }
 
+/** Who asked OutLayer for a ruling: {account, jobId} for an escrow's request_ruling call, {account} for a direct call. */
+export function askerOf(tx, ruling) {
+  const where = rulingJob(tx, ruling);
+  return where.error ? { account: ruling.caller } : { account: where.escrow, jobId: where.jobId };
+}
+
 /** A report builder: step(id, ok, label, detail) records one check and returns ok; done() closes the report. */
 function reporter() {
   const steps = [];
@@ -341,6 +367,10 @@ async function rulingInput(ruling, { signer, job, tx, rpc, fetchImpl }, step) {
     const same = !where.error && where.escrow === job.escrow && where.jobId === job.jobId;
     const detail = where.error ?? `the transaction asks for job ${where.jobId} of ${where.escrow}`;
     if (!step("job", same, `The ruling was asked for job ${job.jobId} of ${job.escrow}`, detail)) return undefined;
+  } else if (tx) {
+    // No job named: say who asked, so a ruling another contract asked for cannot pass for one of the escrow's.
+    const asker = askerOf(tx, ruling);
+    step("asker", true, asker.jobId === undefined ? `Asked for directly by ${asker.account}, not through an escrow` : `Asked for by ${asker.account}, job ${asker.jobId}`);
   }
   if (!step("source", Boolean(ruling.source), "The request names a wasm by URL and SHA-256", ruling.source ? ruling.source.url : "no WasmUrl source in the request")) return undefined;
   const published = PUBLISHED_JUDGES.get(ruling.source.hash);
@@ -476,6 +506,6 @@ export async function verifyTransaction(txHash, signer, options = {}) {
   if (!ruling) return { ok: false, steps: [{ id: "find", ok: false, label: "This transaction did not ask OutLayer to run anything", detail: "" }] };
   const { delivery, ...rest } = options;
   const report = delivery === undefined ? await verifyRuling(ruling, { ...rest, signer, tx }) : await verifyWithDelivery(ruling, delivery, { ...rest, signer, tx });
-  return { ...report, ruling };
+  return { ...report, ruling, asker: askerOf(tx, ruling) };
 }
 

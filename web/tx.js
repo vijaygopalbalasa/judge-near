@@ -1,6 +1,6 @@
 // Page wiring for web/tx.html: one transaction in plain terms. The reading and summarising live in verify.js.
 import { parseDeepLink } from "./escrow.js";
-import { PUBLISHED_JUDGES, fetchTransaction, findRuling, summarizeTx } from "./verify.js";
+import { PUBLISHED_JUDGES, expandJson, fetchTransaction, findRuling, summarizeTx } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -38,16 +38,23 @@ async function main() {
     const sum = summarizeTx(tx);
     const refused = sum.outlayer.some((o) => !o.success);
     status.className = sum.status === "success" && !refused ? "ok" : "bad";
+    const reason = sum.outlayer.find((o) => !o.success)?.error ?? "no reason given";
     status.textContent = sum.status !== "success" ? "The transaction failed."
-      : refused ? "The transaction went through, and OutLayer refused to run the wasm (below)." : "The transaction succeeded.";
+      : refused ? `The transaction went through, and OutLayer refused to run the wasm: ${reason}` : "The transaction succeeded.";
     const head = el("section");
     head.append(el("h2", "", "Transaction"), row("hash", link.tx), row("signer", sum.signer), row("receiver", sum.receiver));
+    // What OutLayer did comes first: it is the reason most people open a transaction here.
+    for (const o of sum.outlayer) {
+      head.append(o.success
+        ? row("OutLayer", `ran the wasm: ${o.instructions ?? "?"} instructions, ${o.timeMs ?? "?"} ms`, "mono ok")
+        : row("OutLayer", `refused: ${o.error ?? "no reason given"}`, "mono bad"));
+    }
     for (const a of sum.actions) {
       head.append(row("action", a.kind === "FunctionCall" ? `${a.method}(), deposit ${yocto(a.deposit)}` : a.deposit ? `${a.kind}, ${yocto(a.deposit)}` : a.kind));
       if (a.args) {
         let text = a.args;
         try {
-          text = JSON.stringify(JSON.parse(a.args), null, 2);
+          text = JSON.stringify(expandJson(JSON.parse(a.args)), null, 2);
         } catch {
           // not JSON: shown as it is
         }
@@ -57,11 +64,6 @@ async function main() {
       }
     }
     if (sum.failure) head.append(row("failure", sum.failure));
-    for (const o of sum.outlayer) {
-      head.append(o.success
-        ? row("OutLayer", `ran the wasm: ${o.instructions ?? "?"} instructions, ${o.timeMs ?? "?"} ms`, "mono ok")
-        : row("OutLayer", `refused: ${o.error ?? "no reason given"}`, "mono bad"));
-    }
     const ruling = findRuling(tx);
     if (ruling && PUBLISHED_JUDGES.has(ruling.source?.hash)) {
       const p = el("p");

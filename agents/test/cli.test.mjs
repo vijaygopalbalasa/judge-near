@@ -676,6 +676,28 @@ test("verify refuses --delivery with --as, an empty --delivery, and a delivery t
   }
 });
 
+test("create runs the judge on the criteria first: criteria it calls invalid are refused with the reason, and nothing is sent", async () => {
+  const home = tempHome();
+  const bad = path.join(home, "bad.json");
+  fs.writeFileSync(bad, '{"checks":[{"kind":"contains","params":{"terms":["x"]}}]}');
+  const { deps } = makeDeps({ home, near: OFFLINE_NEAR, fetch: offline });
+  const message = /the judge, run here, calls these criteria invalid \(check 1: contains takes all and wholeWords, not terms\), so every delivery would fail; nothing sent/;
+  await assert.rejects(COMMANDS.create({ as: CLIENT, provider: PROVIDER, criteria: bad, "expires-in": "2h" }, deps), message);
+  await assert.rejects(COMMANDS.create({ as: CLIENT, provider: PROVIDER, criteria: bad, "expires-in": "2h", "dry-run": true }, deps), message, "a dry run says so too");
+  assert.ok(!fs.existsSync(path.join(home, ".judge-near")), "no client key is made for a job that cannot work");
+});
+
+test("verify --delivery hands a 16,385-byte delivery to the check: the judge itself rules it too_large", async () => {
+  const home = tempHome();
+  const file = path.join(home, "big.txt");
+  fs.writeFileSync(file, "a".repeat(16_385));
+  const { verifier, seen } = fakeVerifier(sealedRulingOf(), { ok: true, steps: OK_STEPS, local: { pass: false, score: 0 } });
+  const { deps } = makeDeps({ home, near: { view: offline }, fetch: offline });
+  deps.verifier = verifier;
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, delivery: file }, deps);
+  assert.equal(seen.delivery[0].text.length, 16_385);
+});
+
 // ---- verify reads old transactions from archival nodes ----
 // Regular testnet nodes drop transactions after about 30 hours; live commands keep JN_RPC.
 

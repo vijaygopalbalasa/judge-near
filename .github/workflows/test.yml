@@ -1,5 +1,5 @@
 # The README's test commands, on every push, and both published builds rebuilt on macOS arm64 (where they were made)
-# and checked byte for byte. The fuel check (needs wasmtime) and the mutation runs stay local (README).
+# and checked byte for byte. Only the mutation runs (15 to 30 minutes each) stay local (README).
 name: tests
 on:
   push:
@@ -30,6 +30,18 @@ jobs:
       - name: judge tests
         working-directory: judge-wasm
         run: cargo test --locked
+  judge-fuel:
+    # The fuel guard: every adversarial input finishes under 3 billion units of wasmtime fuel (the metering OutLayer
+    # uses), run on the published release file.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bytecodealliance/actions/wasmtime/setup@v1.1.3
+        with:
+          version: "50.0.0"
+      - name: fuel check on judge-wasm/release/judge.wasm
+        working-directory: judge-wasm
+        run: bash scripts/fuel-check.sh 3000000000 release/judge.wasm
   judge-build-macos:
     # The published judge was built on macOS on Apple silicon (aarch64-apple-darwin). This job rebuilds it on
     # GitHub's macOS arm64 runner and checks the bytes against judge-wasm/release/judge.wasm.sha256.

@@ -1,5 +1,6 @@
 // Page wiring for web/index.html. All checking logic lives in verify.js; reading the escrow in escrow.js.
 import { ESCROW, JOB_NOTES, RULINGS, discoverRulings, disclosedDelivery, formatNear, formatTime, jobOutcome, mergeRulings, parseDeepLink, readEscrow } from "./escrow.js";
+import { describeCheck, explainCriteria } from "./criteria.js";
 import { EXAMPLES } from "./examples.js";
 import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
 
@@ -71,6 +72,11 @@ function showOutcome(summary, report) {
   } else {
     summary.className = "summary bad";
     line = "Not verified: see the step that failed below.";
+  }
+  if (report.note) meaning = `${meaning} ${report.note}`.trim();
+  // A ruling another contract asked for can pass every check; say plainly that it is not one of this escrow's.
+  if (report.asker && report.asker.account !== ESCROW) {
+    meaning = `${meaning} ${report.asker.account} asked for this ruling, not ${ESCROW}. The checks prove what the published judge computes on this input; they say nothing about what that account did with the verdict.`.trim();
   }
   summary.replaceChildren(document.createTextNode(line), ...(meaning ? [el("span", "explain", meaning)] : []));
 }
@@ -147,23 +153,32 @@ function jobCard(job, jobs, allRulings) {
   card.append(el("p", "meta", `${formatNear(job.amount)} · ${job.client} → ${job.provider}${when ? ` · created ${when}` : ""}`));
   card.append(el("p", "outcome", jobOutcome(job)));
   const disclosed = disclosedDelivery(job, jobs);
+  if (disclosed) card.append(el("p", "sealed-note", `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
+  // The delivery and the criteria fold away, so a phone shows each job's outcome and rulings without scrolling far.
+  const more = el("details");
+  more.append(el("summary", "", job.sealed ? "Delivery (sealed) and criteria" : "Delivery and criteria"));
   if (job.sealed) {
-    const note = job.deliverable_ct
-      ? `Delivery: sealed, on chain only as ciphertext (${job.deliverable_ct.length} base64 characters); the worker's commitment is dh ${short(job.dh, 8)}`
-      : "Delivery: sealed; nothing delivered yet.";
-    card.append(el("p", "sealed-note", note));
-    if (JOB_NOTES[job.id]) card.append(el("p", "sealed-note", JOB_NOTES[job.id]));
-    if (disclosed) card.append(el("p", "sealed-note", `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
+    more.append(el("p", "sealed-note", job.deliverable_ct
+      ? `Sealed: on chain only as ciphertext (${job.deliverable_ct.length} base64 characters); the worker's commitment is dh ${short(job.dh, 8)}`
+      : "Sealed; nothing delivered yet."));
+    if (JOB_NOTES[job.id]) more.append(el("p", "sealed-note", JOB_NOTES[job.id]));
   } else if (job.deliverable) {
-    const d = el("details");
-    d.append(el("summary", "", `Delivery (public, ${job.deliverable.length} characters)`), el("pre", "", job.deliverable));
-    card.append(d);
+    more.append(el("p", "meta", `Delivery, public, ${job.deliverable.length} characters:`), el("pre", "", job.deliverable));
+  } else {
+    more.append(el("p", "meta", "Nothing delivered yet."));
   }
-  const c = el("details");
-  c.append(el("summary", "", "Criteria"), el("pre", "", prettyCriteria(job.criteria)));
-  card.append(c);
+  let checks = [];
+  try {
+    checks = JSON.parse(job.criteria).checks ?? [];
+  } catch {
+    checks = [];
+  }
+  const kinds = el("ul", "facts");
+  kinds.replaceChildren(...(Array.isArray(checks) ? checks : []).map((c, i) => el("li", "", `${c?.kind ?? "?"}#${i}: ${describeCheck(c)}`)));
+  more.append(el("p", "meta", "Criteria:"), kinds, el("pre", "", prettyCriteria(job.criteria)));
+  card.append(more);
   const rulings = allRulings.filter((r) => r.job === job.id);
-  if (rulings.length === 0) card.append(el("p", "meta", "No ruling found for this job; to check one, paste its transaction in panel 2."));
+  if (rulings.length === 0) card.append(el("p", "meta", "No ruling found for this job; to check one, paste its transaction under \u201cRe-run any ruling\u201d below."));
   for (const r of rulings) card.append(rulingRow(r, disclosed));
   return card;
 }
@@ -201,21 +216,56 @@ async function loadJobs() {
   }
 }
 
+// A disclosed delivery loaded from a file keeps its exact bytes; a text box turns CRLF line endings into LF.
+let deliveryFile = null;
+$("delivery-file").addEventListener("change", async () => {
+  const file = $("delivery-file").files?.[0];
+  deliveryFile = null;
+  $("delivery-file-note").textContent = "";
+  if (!file) return;
+  try {
+    deliveryFile = { name: file.name, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await file.arrayBuffer()) };
+    $("delivery").value = "";
+    $("delivery-file-note").textContent = `Loaded ${file.name} (${file.size} bytes), exactly as saved.`;
+  } catch {
+    $("delivery-file-note").textContent = `${file.name} is not UTF-8 text, so it cannot be a delivery.`;
+  }
+});
+$("delivery").addEventListener("input", () => {
+  if (!deliveryFile) return;
+  deliveryFile = null;
+  $("delivery-file").value = "";
+  $("delivery-file-note").textContent = "";
+});
+
 $("tx-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const key = $("key").value.trim();
-  const delivery = $("delivery").value; // exactly as pasted: its SHA-256 must be the job's dh
+  const delivery = deliveryFile ? deliveryFile.text : $("delivery").value;
   if (key && delivery) {
     $("tx-summary").className = "summary bad";
     $("tx-summary").textContent = "Give the deliverable key or the disclosed delivery, not both.";
     $("tx-steps").replaceChildren();
     return;
   }
+  const tx = $("tx").value.trim();
+  const signer = $("signer").value.trim();
   const options = delivery ? { delivery, runner: runInWorker } : { env: key ? { JN_KEY: key } : {}, runner: runInWorker };
-  runCheck($("tx-go"), $("tx-summary"), $("tx-steps"), () => verifyTransaction($("tx").value.trim(), $("signer").value.trim(), options));
+  runCheck($("tx-go"), $("tx-summary"), $("tx-steps"), async () => {
+    const report = await verifyTransaction(tx, signer, options);
+    const last = report.steps.at(-1);
+    // Pasted text lost any CR when it went into the text box: try it once with CRLF line endings.
+    if (delivery && !deliveryFile && delivery.includes("\n") && last?.id === "delivery" && last.ok === false) {
+      const again = await verifyTransaction(tx, signer, { ...options, delivery: delivery.replace(/\r?\n/g, "\r\n") });
+      if (again.steps.find((s) => s.id === "delivery")?.ok === true) {
+        return { ...again, note: "The pasted text matched once its line endings were put back to CRLF: a browser text box turns CRLF into LF." };
+      }
+    }
+    return report;
+  });
 });
 
-// Panel 3's examples fill both boxes and run the judge; editing either box drops the example's note.
+// The examples fill both boxes and run the judge; editing either box drops the example's note.
 let activeExample = null;
 for (const ex of EXAMPLES) {
   const button = el("button", "secondary", ex.label);
@@ -238,6 +288,7 @@ $("run-form").addEventListener("submit", async (e) => {
   const summary = $("run-summary");
   const out = $("run-out");
   button.disabled = true;
+  $("run-checks").replaceChildren();
   try {
     if (!judgeBytes) {
       const res = await fetch("../judge-wasm/release/judge.wasm");
@@ -247,13 +298,26 @@ $("run-form").addEventListener("submit", async (e) => {
       if (!judgeName) throw new Error(`the judge file served here (sha256 ${await sha256Hex(bytes)}) is not a published build; not running it`);
       judgeBytes = bytes;
     }
-    const input = JSON.stringify({ criteria: $("criteria").value, deliverable: $("deliverable").value });
+    const criteriaText = $("criteria").value;
+    const input = JSON.stringify({ criteria: criteriaText, deliverable: $("deliverable").value });
     const text = await runInWorker(judgeBytes, input);
     const verdict = JSON.parse(text);
     summary.className = `summary ${verdict.pass ? "ok" : "bad"}`;
-    summary.textContent = verdict.err
-      ? `Not judged: ${verdict.err}`
-      : `${verdict.pass ? "Pass" : "Fail"}: score ${verdict.score} of 100 (threshold ${verdict.th}), by ${judgeName}.`;
+    if (verdict.err === "invalid_criteria") {
+      summary.textContent = `Not judged: the judge calls these criteria invalid. ${explainCriteria(criteriaText) ?? "See the check kinds in docs/interface.md, section 2."}`;
+    } else {
+      summary.textContent = verdict.err
+        ? `Not judged: ${verdict.err}`
+        : `${verdict.pass ? "Pass" : "Fail"}: score ${verdict.score} of 100 (threshold ${verdict.th}), by ${judgeName}.`;
+    }
+    // Each check in plain words, next to the judge's id for it (kind#index into the criteria's checks).
+    let checks = [];
+    try {
+      checks = JSON.parse(criteriaText).checks ?? [];
+    } catch {
+      checks = [];
+    }
+    $("run-checks").replaceChildren(...(verdict.checks ?? []).map((c) => markItem(c.ok ? "ok" : "bad", `${c.id}: ${describeCheck(checks[Number(c.id.split("#")[1])])}`)));
     if (activeExample?.note) summary.append(el("span", "explain", activeExample.note));
     out.hidden = false;
     out.textContent = text;
@@ -267,7 +331,7 @@ $("run-form").addEventListener("submit", async (e) => {
 
 loadJobs();
 
-// A link to one ruling, ?tx=<hash>&signer=<account>, opens the page with it checked in panel 2.
+// A link to one ruling, ?tx=<hash>&signer=<account>, opens the page with it checked under "Re-run any ruling".
 const link = parseDeepLink(location.search);
 if (link) {
   $("tx").value = link.tx;

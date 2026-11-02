@@ -30,6 +30,28 @@ The same schema as Judge Protocol's JavaScript engine (`judge-protocol/judge-ser
 checks. Scoring is the engine's `scoreOf`: weighted pass ratio, `Math.round` to an integer 0..100, capped at 99
 when any check fails; `pass = score >= threshold`.
 
+The five kinds of check (web/criteria.js says the same in plain words, and the page uses it to name the problem in
+criteria the judge calls invalid):
+
+| Kind | Passes when | Parameters |
+|---|---|---|
+| `length` | the delivery is at least `min` and at most `max` long | `min`, `max`: numbers of 0 or more, `min` not above `max` (defaults 0 and no limit); `unit`: `"words"` (the default) or `"chars"` (UTF-16 code units) |
+| `contains` | every term in `all` appears in the delivery; case matters | `all`: up to 256 terms of up to 1,024 characters; `wholeWords`: `true` to match whole words only |
+| `schema` | the delivery is a JSON object with every `required` field, each of its `types` type | `required`: up to 256 field names; `types`: an object from field to `"string"`, `"number"`, `"boolean"` or `"object"` (as JavaScript's `typeof`: arrays and null are `"object"`) |
+| `checksum` | the SHA-256 of the delivery's bytes is `sha256` | `sha256`: 64 hex digits |
+| `json` | the delivery is JSON that matches `shape` | `shape`: a subset of JSON Schema with `type` (`object`, `array`, `string`, `number`, `integer`, `boolean`, `null`), `enum`, `anyOf` (2 to 4 alternatives, alone in its object), `required`, `properties`, `additionalProperties` (true or false), `items`, `minItems`, `maxItems`, `uniqueBy` (`{"field": "<name>", "key": "value"}`, or `"key": "domain"` to compare the domains of URLs), `minLength`, `maxLength`, `format` (`"url"` or `"email"`), `minimum`, `maximum`; each keyword needs its matching `type`; at most 128 nodes |
+
+A check is `{"kind", "params"?, "weight"?}` and nothing else; `weight` is above 0 and at most 1,000 (default 1). A
+parameter not listed for its kind makes the criteria invalid. Criteria are at most 4,096 bytes and nest at most 12
+levels. Example (the page's first example):
+
+```json
+{"checks": [
+  {"kind": "schema", "params": {"required": ["title", "sources", "summary"], "types": {"title": "string", "sources": "number", "summary": "string"}}},
+  {"kind": "length", "params": {"max": 600, "unit": "chars"}}
+]}
+```
+
 ## 3. Verdict (stdout of the WASM)
 
 Compact JSON, keys in exactly this order, no spaces, at most 900 bytes:
@@ -194,5 +216,7 @@ so a verifier (`verifyWithDelivery` in `web/verify.js`, or `jn verify --delivery
    covers `k`; on a fail there is no `k`, so the `eh` values match as well.
 
 A ruling the judge returned before opening `C` (`invalid_input`, `key_missing`, `bad_delivery`) cannot be checked
-this way, and the verifier refuses it. `too_large` can be: the escrow refuses criteria over 4,096 bytes and `C` over
-21,884 characters, so on chain it comes only from a plaintext over 16,384 bytes, which the public judge also refuses.
+this way, and the verifier refuses it. `too_large` can be, for a ruling this escrow asked for: it refuses criteria over
+4,096 bytes and `C` over 21,884 characters, so its rulings are `too_large` only for a plaintext over 16,384 bytes,
+which the public judge also refuses. A ruling another contract asked for could be `too_large` on its ciphertext alone;
+the verifier names the account that asked for every ruling.
