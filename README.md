@@ -19,9 +19,9 @@ AI Security & Defense.
 | Judge (Rust, `wasm32-wasip1`) | Done, v2 (public and sealed jobs): 305 parity vectors against the original engine plus 42 sealed vectors, fuel-bounded, reproducible build |
 | Judge running on OutLayer testnet | Done: v1 called directly ([tx 4VFvzo...](https://testnet.nearblocks.io/txns/4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk)) and v2 called by the escrow for six rulings ([below](#the-escrow-on-testnet)); every verdict identical to a local run |
 | OutLayer vault rules for sealed keys | Verified on testnet with `tools/keystore-probe` (transactions below) |
-| Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Done: re-runs public rulings, sealed rulings with the delivery key, and key_missing rulings without one |
+| Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Done: re-runs public rulings, sealed rulings with the delivery key, and key_missing rulings without one; the page lists the escrow's jobs live with a Verify button per ruling, and a sealed ruling without its key still gets the checks that need none |
 | Escrow contract (near-sdk 5), public and sealed jobs | Done: 112 unit tests, 13 tests in the NEAR sandbox, 79 of 79 planted bugs caught; deployed on testnet as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
-| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; 51 offline tests; every path run live on testnet ([below](#the-escrow-on-testnet)) |
+| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; 52 offline tests; every path run live on testnet ([below](#the-escrow-on-testnet)) |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -46,22 +46,32 @@ commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Any rulin
 python3 -m http.server 8080
 ```
 
-Open http://localhost:8080/web/ and press **Verify this ruling**. The page reads the testnet transaction from the
-same archival nodes, downloads the exact wasm OutLayer ran, checks its SHA-256 against the hash OutLayer was told to
-run and against the published build, runs it in your browser on the same input, and compares the verdicts. Expected: ten green checks and
-"Verified: judge v1 (public jobs), commit e09c6f9 computes exactly this ruling (pass: true, score: 100)."
-The second panel runs the judge on criteria and a deliverable you type.
+Open http://localhost:8080/web/. Panel 1 reads the escrow live from testnet. Expected: two green checks ("Runs the
+published escrow build", code hash `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`, and "Its judge is judge v2 (public
+and sealed jobs), commit fd3dcc6"), "5 jobs, read at block" with the block number, and one card per job with its
+state, amount, parties and outcome. Press **Verify** on job 0's ruling: the page reads the transaction from the same
+archival nodes, checks that it asked for job 0 of this escrow, downloads the exact wasm OutLayer ran, checks its
+SHA-256 against the hash OutLayer was told to run and against the published build, runs it in your browser on the
+same input, and compares the verdicts. Expected: eleven green checks and "Verified: judge v2 (public and sealed jobs),
+commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Job 1 and the first ruling of job 4
+(`key_missing`, re-run without a key) verify the same way. Re-running a sealed score needs the delivery key, which
+only the worker and, after a pass, the client hold, so the other sealed rulings (jobs 2 and 3, and job 4's second)
+show nine green checks (the verdict's `ch`, `dh` and `eh` among them), a circle on the re-run, and "Consistent, not
+re-run". Panel 2
+re-runs any ruling transaction; its default, the judge v1 run of Nov 1, gives ten green checks and "Verified: judge
+v1 (public jobs), commit e09c6f9 computes exactly this ruling (pass: true, score: 100)." Panel 3 runs the judge on
+criteria and a deliverable you type.
 
 **3. Run the tests.**
 
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (Rust 1.95 or newer) |
-| `node --test web/test/*.test.mjs` | 28 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 39 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
-| `cd agents && npm ci && npm test` | 51 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `cd agents && npm ci && npm test` | 52 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 
 **4. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 
@@ -113,7 +123,9 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
   judge decrypts inside the TEE, checks the plaintext against the committed `dh`, and on a pass outputs `K` sealed to
   the client's X25519 key. The secret is encrypted on the worker's machine; the plaintext is never sent anywhere.
 - **The verifier** (`web/`, and `node jn.mjs verify` in `agents/`) re-runs any ruling from its transaction with a
-  100-line WASI host, so a judge's work is checkable by anyone, not only by the parties.
+  100-line WASI host, so a judge's work is checkable by anyone, not only by the parties. The page also lists the
+  escrow's jobs, read live. Re-running a sealed score needs the delivery key; without it, the verifier still checks
+  that the verdict's `ch`, `dh` and `eh` match the job's criteria, the worker's commitment and the verdict itself.
 
 The full contract between the parts is in [`docs/interface.md`](docs/interface.md).
 
@@ -162,8 +174,13 @@ The account still has its deploy key; see the limits below. Each job below was r
 
 Every ruling above verifies with `node jn.mjs verify --tx <ruling> --signer <who signed it>`: the public ones as they
 are, the key_missing one without a key, and the sealed ones with `--as` the client (once the key is released) or the
-worker, whose saved key the tool loads in memory and hands only to the checked judge. Signers: jobs 1 and 3 were
-signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`.
+worker, whose saved key the tool loads in memory and hands only to the checked judge. Without `--as`, a sealed ruling
+gets only the checks that need no key and ends with "not re-run" (exit status 1); the page's Verify buttons do the
+same. Signers: jobs 1 and 3 were signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`.
+
+The sealed jobs reuse the delivery texts of the public ones: jobs 2 and 4 seal the text of job 0, and job 3 the text
+of job 1, so their `dh` values match. That tests the mechanics, but those deliveries are not secret; a real sealed
+delivery is new work that nobody can guess (see the limits below).
 
 ## Security model and honest limits
 
@@ -192,7 +209,7 @@ signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`.
 | `judge-wasm/release/judge.wasm` | The exact file OutLayer downloads, with its SHA-256 |
 | `contract/` | The escrow contract and a mock OutLayer for sandbox tests |
 | `agents/` | The command line tool a client and a worker use to run a job on testnet |
-| `web/` | The browser verifier and its tests |
+| `web/` | The page: the escrow's jobs, read live, and the browser verifier, with their tests |
 | `tools/keystore-probe/` | The probe used to check OutLayer's vault rules on testnet |
 | `tools/deploy-escrow.mjs` | Deploys the published escrow build to a testnet account and initialises it, in one transaction |
 | `docs/interface.md` | Input, verdict, hashes, contract rules and sealed mode, in one place |

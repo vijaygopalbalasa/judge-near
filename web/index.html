@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Judge on NEAR: verify a ruling</title>
+  <title>Judge on NEAR: testnet jobs and rulings</title>
   <link rel="icon" href="data:,">
-  <meta name="description" content="Re-run any Judge on NEAR ruling in your browser: download the exact wasm OutLayer ran, check its SHA-256, run it on the same input and compare verdicts.">
+  <meta name="description" content="The jobs on the Judge on NEAR testnet escrow, read live, and every ruling re-run in your browser: download the exact wasm OutLayer ran, check its SHA-256, run it on the same input and compare verdicts.">
   <style>
     :root {
       --bg: #fbfaf7; --panel: #ffffff; --ink: #1d1d1b; --muted: #5d5d58; --line: #e3e1da;
-      --ok: #1f7a4d; --bad: #b3261e; --accent: #2d5bd7; --code: #f3f1ea;
+      --ok: #1f7a4d; --bad: #b3261e; --accent: #2d5bd7; --code: #f3f1ea; --note: #8a5a00;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #a9a8a1; --line: #34332f;
-        --ok: #5cc98f; --bad: #f2867d; --accent: #8fb0ff; --code: #262522;
+        --ok: #5cc98f; --bad: #f2867d; --accent: #8fb0ff; --code: #262522; --note: #e8b453;
       }
     }
     * { box-sizing: border-box; }
@@ -34,23 +34,53 @@
     ol.steps li .mark { display: inline-block; width: 1.4em; font-weight: 700; }
     ol.steps li.ok .mark { color: var(--ok); }
     ol.steps li.bad .mark { color: var(--bad); }
+    ol.steps li.skip .mark { color: var(--note); }
     .detail { display: block; margin: 4px 0 0 1.4em; color: var(--muted); font: 0.82rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .verdict { margin-top: 14px; padding: 12px; background: var(--code); border-radius: 8px; font: 0.82rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
     .summary { margin-top: 14px; font-weight: 700; }
-    .summary.ok { color: var(--ok); } .summary.bad { color: var(--bad); }
+    .summary.ok { color: var(--ok); } .summary.bad { color: var(--bad); } .summary.note { color: var(--note); }
+    ul.facts { list-style: none; padding: 0; margin: 0 0 4px; font-size: 0.92rem; }
+    ul.facts li { padding: 3px 0; overflow-wrap: anywhere; }
+    ul.facts li .mark { display: inline-block; width: 1.4em; font-weight: 700; }
+    ul.facts li.ok .mark { color: var(--ok); } ul.facts li.bad .mark { color: var(--bad); }
+    .job { border-top: 1px solid var(--line); padding: 18px 0 4px; }
+    .job-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .job-head h3 { margin: 0 4px 0 0; font-size: 1.08rem; }
+    .badge { font: 600 0.75rem/1.6 system-ui, sans-serif; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+    .badge.sealed { color: var(--accent); border-color: currentColor; }
+    .badge.Completed { color: var(--ok); border-color: currentColor; }
+    .badge.Refunded { color: var(--note); border-color: currentColor; }
+    .job p { margin: 6px 0 0; }
+    .job .meta { color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+    .job .outcome { font-weight: 600; }
+    .job .sealed-note { font-size: 0.9rem; overflow-wrap: anywhere; }
+    details { margin-top: 8px; font-size: 0.9rem; }
+    summary { cursor: pointer; color: var(--accent); }
+    pre { margin: 6px 0 0; padding: 10px; background: var(--code); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.8rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .ruling { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+    .ruling-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 0.9rem; }
+    .ruling-head button { margin-top: 0; padding: 8px 16px; }
+    .ruling .summary { margin-top: 10px; font-size: 0.92rem; }
     footer { color: var(--muted); font-size: 0.88rem; }
     a { color: var(--accent); }
   </style>
 </head>
 <body>
 <main>
-  <h1>Verify a Judge on NEAR ruling</h1>
-  <p class="lead">Paste a NEAR testnet transaction that asked OutLayer to run the judge. This page downloads the exact
-    wasm OutLayer ran, checks its SHA-256, runs it here on the same input, and compares the verdict with the one on chain.
-    Nothing is sent anywhere except read requests to NEAR archival RPC nodes and the wasm URL.</p>
+  <h1>Judge on NEAR</h1>
+  <p class="lead">The jobs on the testnet escrow, read live from NEAR, and a Verify button for each ruling. Verify
+    downloads the exact wasm OutLayer ran, checks its SHA-256, runs it here on the same input, and compares the verdict
+    with the one on chain. Nothing is sent anywhere except read requests to NEAR RPC nodes and the wasm URL.</p>
 
   <section>
-    <h2>1. Re-run a ruling from a transaction</h2>
+    <h2>1. Jobs on <code id="escrow-name">judgenear-escrow.testnet</code></h2>
+    <ul id="escrow-facts" class="facts"></ul>
+    <div id="jobs-status" class="summary" role="status" aria-live="polite">Reading the escrow from NEAR testnet...</div>
+    <div id="jobs"></div>
+  </section>
+
+  <section>
+    <h2>2. Re-run any ruling from its transaction</h2>
     <form id="tx-form">
       <label for="tx">Transaction hash</label>
       <input id="tx" required value="4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk" autocomplete="off" spellcheck="false">
@@ -65,7 +95,7 @@
   </section>
 
   <section>
-    <h2>2. Run the judge on your own job</h2>
+    <h2>3. Run the judge on your own job</h2>
     <form id="run-form">
       <label for="criteria">Criteria (JSON)</label>
       <textarea id="criteria" spellcheck="false">{"checks":[{"kind":"length","params":{"min":3,"max":40}}]}</textarea>

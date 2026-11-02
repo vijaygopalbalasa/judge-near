@@ -1,0 +1,133 @@
+// Run from the repository root: node --test web/test/*.test.mjs   (no dependencies)
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { ESCROW, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, formatNear, jobOutcome, readEscrow } from "../escrow.js";
+import { TESTNET_ARCHIVAL_RPCS } from "../verify.js";
+import * as agentsConfig from "../../agents/lib/config.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const readme = readFileSync(path.join(root, "README.md"), "utf8");
+
+test("the ruling list is the README's escrow table, row for row, with the signers the README names", () => {
+  const section = readme.split("### The escrow on testnet")[1].split("\n## ")[0];
+  const rows = section.split("\n").filter((line) => /^\| \d/.test(line));
+  const fromReadme = rows.map((row) => {
+    const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
+    return { job: Number.parseInt(cells[0], 10), tx: /txns\/([1-9A-HJ-NP-Za-km-z]{43,44})\)/.exec(cells.at(-1))[1] };
+  });
+  assert.equal(fromReadme.length, 6);
+  assert.deepEqual(RULINGS.map(({ job, tx }) => ({ job, tx })), fromReadme);
+  const prose = section.replace(/\s+/g, " ");
+  assert.ok(prose.includes("Signers: jobs 1 and 3 were signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`."));
+  for (const r of RULINGS) assert.equal(r.signer, [1, 3].includes(r.job) ? "judgenear-client.testnet" : "judgenear-worker.testnet", r.tx);
+  assert.ok(prose.includes(`\`${ESCROW}\` was deployed`));
+});
+
+test("the page's published escrow build is the agents' and contract/BUILD.md's", () => {
+  assert.equal(PUBLISHED_ESCROW_CODE_HASH, agentsConfig.PUBLISHED_ESCROW_CODE_HASH);
+  assert.ok(readFileSync(path.join(root, "contract/BUILD.md"), "utf8").includes(`SHA-256 base58 (NEAR code_hash form): \`${PUBLISHED_ESCROW_CODE_HASH}\``));
+});
+
+test("current state is read from regular testnet nodes first, then from the archival nodes", () => {
+  assert.deepEqual([...TESTNET_STATE_RPCS], ["https://rpc.testnet.near.org", "https://rpc.testnet.fastnear.com", ...TESTNET_ARCHIVAL_RPCS]);
+  assert.equal(TESTNET_STATE_RPCS[0], agentsConfig.DEFAULT_RPC_URL);
+});
+
+// ---- reading the escrow: a fake chain that answers view_account, get_judge and list_jobs ----
+
+const JUDGE = {
+  outlayer: "outlayer.testnet",
+  url: "https://raw.githubusercontent.com/vijaygopalbalasa/judge-near/fd3dcc65a9f616a6c7e9dc411a65de50560e2ed6/judge-wasm/release/judge.wasm",
+  hash: "911b8a351d199d003735ceef138647ec8485de8eff197aa909f5db496b92c958",
+  build_target: "wasm32-wasip1",
+  min_ruling_deposit: "10000000000000000000000",
+};
+const bytesOf = (value) => [...new TextEncoder().encode(JSON.stringify(value))];
+const jobView = (n, extra = {}) => ({
+  client: "client.testnet", provider: "worker.testnet", criteria: "{}", ch: "a".repeat(64), deliverable: `delivery ${n}`, dh: "b".repeat(64),
+  sealed: false, client_pk: null, deliverable_ct: "", k: null, amount: "500000000000000000000000", state: "Completed",
+  expires_at_ns: "1", attempt: "1", created_at_ns: "1", ...extra,
+});
+
+/** `fail` maps a host to a response maker that fails; every other host answers from the fake chain. */
+function fakeChain({ codeHash = PUBLISHED_ESCROW_CODE_HASH, jobs = [], fail = {}, contractError } = {}) {
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    const { method, params } = JSON.parse(init.body);
+    asked.push({ url, method, request: params.request_type, fn: params.method_name, account: params.account_id, args: params.args_base64 ? JSON.parse(atob(params.args_base64)) : undefined });
+    if (fail[url]) return fail[url]();
+    let result;
+    if (params.request_type === "view_account") result = { code_hash: codeHash, amount: "1", block_height: 275900123 };
+    else if (contractError) result = { error: contractError, logs: [] };
+    else if (params.method_name === "get_judge") result = { result: bytesOf(JUDGE), logs: [] };
+    else if (params.method_name === "list_jobs") {
+      const { from_index: from, limit } = JSON.parse(atob(params.args_base64));
+      result = { result: bytesOf(jobs.slice(from, from + limit)), logs: [] };
+    } else throw new Error(`unexpected call ${params.method_name}`);
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: "2.0", id: "x", result }) };
+  };
+  return { fetchImpl, asked };
+}
+
+test("readEscrow reads the code hash, the judge and every job, numbering each job by its place in list_jobs", async () => {
+  const jobs = Array.from({ length: 23 }, (_, n) => jobView(n));
+  const { fetchImpl, asked } = fakeChain({ jobs });
+  const got = await readEscrow(ESCROW, { fetchImpl });
+  assert.equal(got.escrow, ESCROW);
+  assert.equal(got.codeHash, PUBLISHED_ESCROW_CODE_HASH);
+  assert.equal(got.publishedBuild, true);
+  assert.equal(got.blockHeight, 275900123);
+  assert.deepEqual(got.judge, JUDGE);
+  assert.deepEqual(got.jobs.map((j) => j.id), [...Array(23).keys()]);
+  assert.deepEqual(got.jobs.map((j) => j.deliverable), jobs.map((j) => j.deliverable));
+  assert.deepEqual(asked.filter((a) => a.fn === "list_jobs").map((a) => a.args), [
+    { from_index: 0, limit: 10 }, { from_index: 10, limit: 10 }, { from_index: 20, limit: 10 },
+  ]);
+  assert.ok(asked.every((a) => a.url === TESTNET_STATE_RPCS[0] && a.account === ESCROW && a.method === "query"));
+});
+
+test("readEscrow stops after an empty page, and flags an escrow that does not run the published build", async () => {
+  const { fetchImpl, asked } = fakeChain({ codeHash: "11111111111111111111111111111111", jobs: Array.from({ length: 10 }, (_, n) => jobView(n)) });
+  const got = await readEscrow(ESCROW, { fetchImpl });
+  assert.equal(got.publishedBuild, false);
+  assert.equal(got.jobs.length, 10);
+  assert.deepEqual(asked.filter((a) => a.fn === "list_jobs").map((a) => a.args.from_index), [0, 10]);
+});
+
+test("readEscrow moves to the next node when one fails, and reports a contract error by method", async () => {
+  const down = { [TESTNET_STATE_RPCS[0]]: () => ({ ok: false, status: 429, json: async () => ({}) }) };
+  const { fetchImpl, asked } = fakeChain({ jobs: [jobView(0)], fail: down });
+  const got = await readEscrow(ESCROW, { fetchImpl });
+  assert.equal(got.jobs.length, 1);
+  assert.deepEqual([...new Set(asked.map((a) => a.url))], TESTNET_STATE_RPCS.slice(0, 2));
+  const broken = fakeChain({ contractError: "wasm execution failed with error: MethodNotFound" });
+  await assert.rejects(readEscrow(ESCROW, { fetchImpl: broken.fetchImpl }), /get_judge on judgenear-escrow\.testnet failed: wasm execution failed/);
+});
+
+test("formatNear shows yoctoNEAR exactly, without floating point", () => {
+  assert.equal(formatNear("500000000000000000000000"), "0.5 NEAR");
+  assert.equal(formatNear("1000000000000000000000000"), "1 NEAR");
+  assert.equal(formatNear("12345000000000000000000000"), "12.345 NEAR");
+  assert.equal(formatNear("10000000000000000000000"), "0.01 NEAR");
+  assert.equal(formatNear("1"), "0.000000000000000000000001 NEAR");
+  assert.equal(formatNear("0"), "0 NEAR");
+  for (const bad of ["-1", "1.5", "", "0x10", 5]) assert.throws(() => formatNear(bad), /yoctoNEAR/, String(bad));
+});
+
+test("jobOutcome says in one line what happened to a job, and whether a sealed key went to the client", () => {
+  const pub = (state) => jobView(0, { state });
+  const sealed = (state, k = null) => jobView(0, { state, sealed: true, client_pk: "c".repeat(64), deliverable: "", deliverable_ct: "AAAA", k });
+  assert.equal(jobOutcome(pub("Completed")), "Passed: the escrow paid the worker.");
+  assert.equal(jobOutcome(sealed("Completed", "k".repeat(124))), "Passed: the escrow paid the worker and released the key to the client in the same step.");
+  assert.equal(jobOutcome(sealed("Completed")), "Passed: the escrow paid the worker.");
+  assert.equal(jobOutcome(pub("Refunded")), "Refunded to the client.");
+  assert.equal(jobOutcome(sealed("Refunded")), "Refunded to the client; the key was never released, so the delivery stays sealed.");
+  assert.equal(jobOutcome(pub("Open")), "Created; waiting for the client to fund it.");
+  assert.equal(jobOutcome(pub("Funded")), "Funded; waiting for the delivery.");
+  assert.equal(jobOutcome(pub("Submitted")), "Delivered; waiting for a ruling.");
+  assert.equal(jobOutcome(pub("Ruling")), "OutLayer is running the judge.");
+  assert.equal(jobOutcome(pub("Lost")), "Unknown state: Lost");
+});

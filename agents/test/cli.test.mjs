@@ -587,14 +587,35 @@ test("verify a key_missing ruling loads no key: the judge ran without one", asyn
   assert.ok(!fs.existsSync(path.join(home, ".judge-near")));
 });
 
-test("verify fails when a check fails, and a sealed ruling without --as says how to give the key", async () => {
-  const failed = { ok: false, steps: [{ id: "key", ok: false, label: "Sealed job: the deliverable key is needed to re-run it", detail: "only the client (after opening k) or the provider holds it" }] };
-  const { verifier } = fakeVerifier(sealedRulingOf(), failed);
+test("verify fails when a check fails, and prints that check as FAIL", async () => {
+  const failed = { ok: false, steps: [OK_STEPS[0], { id: "match", ok: false, label: "The local verdict equals the on-chain verdict, field by field", detail: "on chain: {}" }] };
+  const { verifier } = fakeVerifier(publicRuling, failed);
   const { deps, lines } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
   deps.verifier = verifier;
-  await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /not verified/);
+  await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /not verified: see the check marked FAIL above/);
   const text = lines.join("\n");
-  assert.match(text, /FAIL Sealed job: the deliverable key is needed to re-run it/);
+  assert.match(text, /^ok {3}That hash is a published Judge on NEAR build/m);
+  assert.match(text, /^FAIL The local verdict equals the on-chain verdict, field by field/m);
+  assert.doesNotMatch(text, /Verified:/);
+});
+
+test("verify a sealed ruling without --as: the checks that need no key print ok, the re-run prints skip, never FAIL, and it says how to give the key", async () => {
+  const needsKey = {
+    ok: false,
+    needsKey: true,
+    steps: [
+      { id: "ch", ok: true, label: "The verdict's ch is the SHA-256 of the job's criteria", detail: "4dad61a8" },
+      { id: "key", ok: null, label: "Not re-run: the score needs the delivery key, which only the worker and, after a pass, the client hold", detail: "" },
+    ],
+  };
+  const { verifier } = fakeVerifier(sealedRulingOf(), needsKey);
+  const { deps, lines } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  deps.verifier = verifier;
+  await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /not re-run: the deliverable key is needed/);
+  const text = lines.join("\n");
+  assert.match(text, /^ok {3}The verdict's ch is the SHA-256 of the job's criteria \| 4dad61a8$/m);
+  assert.match(text, /^skip Not re-run: the score needs the delivery key/m);
+  assert.doesNotMatch(text, /FAIL|Verified:/);
   assert.match(text, /add --as <client> \(after the key is released\) or --as <provider>/);
 });
 

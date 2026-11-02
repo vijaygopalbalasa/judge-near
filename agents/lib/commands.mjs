@@ -437,8 +437,10 @@ export async function verify(opts, deps) {
     deps.out(`sealed ruling of job ${jobId}: re-running it with the deliverable key, loaded as ${as} and kept in memory`);
   }
   const report = await v.verifyRuling(ruling, { signer, tx, rpc, fetchImpl: deps.fetch, env });
-  for (const s of report.steps) deps.out(`${s.ok ? "ok  " : "FAIL"} ${s.label}${s.detail ? ` | ${showDetail(s.detail)}` : ""}`);
-  if (report.ok) {
+  const mark = (ok) => (ok === true ? "ok  " : ok === null ? "skip" : "FAIL");
+  for (const s of report.steps) deps.out(`${mark(s.ok)} ${s.label}${s.detail ? ` | ${showDetail(s.detail)}` : ""}`);
+  const outcome = webVerify.reportOutcome(report);
+  if (outcome === "verified") {
     const published = report.steps.find((s) => s.id === "published")?.detail;
     deps.out(`Verified: ${published} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`);
     return { ok: true };
@@ -446,6 +448,7 @@ export async function verify(opts, deps) {
   if (sealed && !keyMissing && as === undefined) {
     deps.out("This ruling is sealed: add --as <client> (after the key is released) or --as <provider> to re-run it with the deliverable key.");
   }
+  if (outcome === "needs-key") throw new Error("not re-run: the deliverable key is needed; the checks above need none");
   throw new Error("not verified: see the check marked FAIL above");
 }
 

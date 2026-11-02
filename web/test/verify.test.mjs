@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, rulingJob, runJudge, sha256Hex, verifyRuling, verifyTransaction } from "../verify.js";
+import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, reportOutcome, rulingJob, runJudge, sha256Hex, verifyRuling, verifyTransaction } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -113,11 +113,21 @@ test("verifyRuling refuses a wasm whose hash is not the one OutLayer ran", async
   assert.equal(hash.detail, await sha256Hex(probe));
 });
 
-test("a sealed ruling asks for the key instead of guessing", async () => {
+test("a sealed ruling without the key is never reported as verified, and the judge is never run", async () => {
   const r = { ...findRuling(tx), secretsRef: { profile: "jn-x-1", account_id: "provider.testnet" } };
-  const report = await verifyRuling(r, { wasmBytes: judgeV1 });
+  let ran = 0;
+  const runner = async () => {
+    ran++;
+    return "{}";
+  };
+  const fetchImpl = async () => {
+    throw new Error("nothing is downloaded when the judge cannot be re-run");
+  };
+  const report = await verifyRuling(r, { wasmBytes: judgeV1, runner, fetchImpl });
   assert.equal(report.ok, false);
+  assert.equal(ran, 0);
   assert.equal(report.steps.at(-1).id, "key");
+  assert.equal(report.steps.at(-1).ok, null, "not done is neither passed nor failed");
 });
 
 test("a transaction without an OutLayer request yields no ruling", () => {
@@ -257,12 +267,82 @@ test("a sealed key_missing ruling re-runs without a key, as OutLayer ran it, eve
   }
 });
 
-test("a sealed ruling that is not key_missing still needs the key", async () => {
+test("a sealed ruling without the key runs the checks that need none, and marks the re-run as not done", async () => {
+  for (const v of sealedVectors.filter((x) => JSON.parse(x.expected).err !== "key_missing").slice(0, 6)) {
+    let ran = 0;
+    const runner = async () => {
+      ran++;
+      return "{}";
+    };
+    const report = await verifyRuling(sealedRuling(v), { wasmBytes: judge, runner });
+    assert.deepEqual(report.steps.map((s) => s.id), ["source", "published", "result", "input", "ch", "dh", "eh", "key"], v.name);
+    assert.deepEqual(report.steps.filter((s) => s.ok !== true).map((s) => [s.id, s.ok]), [["key", null]], `${v.name}: ${JSON.stringify(report.steps)}`);
+    assert.equal(report.ok, false, `${v.name}: without a re-run it is not verified`);
+    assert.equal(report.needsKey, true);
+    assert.equal(reportOutcome(report), "needs-key");
+    assert.equal(ran, 0);
+  }
+});
+
+test("without the key, a changed ch, dh or eh is still caught, and so is a criteria the verdict was not computed on", async () => {
   const v = sealedVectors.find((x) => x.expected.includes('"k":'));
-  const report = await verifyRuling(sealedRuling(v), { wasmBytes: judge });
-  assert.equal(report.ok, false);
-  assert.equal(report.steps.at(-1).id, "key");
-  assert.equal(report.steps.at(-1).ok, false);
+  const base = sealedRuling(v);
+  const withEh = async (verdict) => ({ ...verdict, eh: await expectedEh(verdict) });
+  const cases = {
+    ch: { ...base, verdict: await withEh({ ...base.verdict, ch: "1".repeat(64) }) },
+    dh: { ...base, verdict: await withEh({ ...base.verdict, dh: "2".repeat(64) }) },
+    eh: { ...base, verdict: { ...base.verdict, eh: "3".repeat(64) } },
+    criteria: { ...base, input: JSON.stringify({ ...JSON.parse(base.input), criteria: '{"checks":[]}' }) },
+  };
+  const failing = { ch: "ch", dh: "dh", eh: "eh", criteria: "ch" };
+  for (const [name, ruling] of Object.entries(cases)) {
+    const report = await verifyRuling(ruling, { wasmBytes: judge });
+    assert.equal(reportOutcome(report), "failed", name);
+    assert.deepEqual(report.steps.filter((s) => s.ok === false).map((s) => s.id), [failing[name]], `${name}: ${JSON.stringify(report.steps)}`);
+    assert.equal(report.ok, false, name);
+  }
+});
+
+test("reportOutcome: verified only after a matching re-run; needs-key only when nothing failed", async () => {
+  assert.equal(reportOutcome(await verifyRuling(findRuling(tx), { wasmBytes: judgeV1 })), "verified");
+  const r = findRuling(tx);
+  assert.equal(reportOutcome(await verifyRuling({ ...r, verdict: { ...r.verdict, score: 0 } }, { wasmBytes: judgeV1 })), "failed");
+  const v = sealedVectors.find((x) => x.expected.includes('"k":'));
+  assert.equal(reportOutcome(await verifyRuling(sealedRuling(v), { wasmBytes: judge, env: { JN_KEY: v.test_jn_key } })), "verified");
+  assert.equal(reportOutcome({ ok: false, needsKey: true, steps: [{ id: "ch", ok: false }, { id: "key", ok: null }] }), "failed");
+  assert.equal(reportOutcome({ ok: false, steps: [{ id: "x", ok: null }] }), "failed", "an unexplained gap is not a pass");
+  assert.equal(reportOutcome({ ok: false, needsKey: true, steps: [{ id: "ch", ok: undefined }, { id: "key", ok: null }] }), "failed", "a step without a result is not a pass");
+  assert.equal(reportOutcome({ ok: false, needsKey: true, steps: [{ id: "key", ok: null }, { id: "eh", ok: true }] }), "failed", "only a final key step may be left undone");
+  assert.equal(reportOutcome({ ok: true, steps: [] }), "failed", "no checks is not verified");
+});
+
+test("a ruling checked for a job: it passes only when the request_ruling call names that job of that escrow", async () => {
+  const v = sealedVectors.find((x) => x.expected.includes('"k":'));
+  const ruling = sealedRuling(v); // caller escrow.testnet
+  const callFor = (receiver, jobId) => ({ transaction: { receiver_id: receiver, actions: [{ FunctionCall: { method_name: "request_ruling", args: btoa(JSON.stringify({ job_id: jobId })) } }] } });
+  const opts = { wasmBytes: judge, env: { JN_KEY: v.test_jn_key } };
+
+  const right = await verifyRuling(ruling, { ...opts, tx: callFor("escrow.testnet", 3), job: { escrow: "escrow.testnet", jobId: 3 } });
+  assert.equal(right.ok, true, JSON.stringify(right.steps.filter((s) => !s.ok)));
+  assert.equal(right.steps[0].id, "job");
+  assert.match(right.steps[0].label, /job 3 of escrow\.testnet/);
+
+  for (const [name, tx, job] of [
+    ["another job", callFor("escrow.testnet", 4), { escrow: "escrow.testnet", jobId: 3 }],
+    ["another escrow", callFor("escrow.testnet", 3), { escrow: "other-escrow.testnet", jobId: 3 }],
+    ["a call to a contract that did not ask OutLayer", callFor("other-escrow.testnet", 3), { escrow: "other-escrow.testnet", jobId: 3 }],
+    ["no transaction", undefined, { escrow: "escrow.testnet", jobId: 3 }],
+  ]) {
+    let ran = 0;
+    const runner = async () => {
+      ran++;
+      return "{}";
+    };
+    const report = await verifyRuling(ruling, { ...opts, tx, job, runner });
+    assert.equal(report.ok, false, name);
+    assert.deepEqual(report.steps.map((s) => [s.id, s.ok]), [["job", false]], name);
+    assert.equal(ran, 0, `${name}: nothing else runs`);
+  }
 });
 
 test("rulingJob reads the escrow and job from the request_ruling call, and only from the contract that asked OutLayer", () => {

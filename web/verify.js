@@ -224,18 +224,54 @@ export async function runJudge(wasmBytes, input, env = {}) {
 }
 
 /**
- * Check one ruling. `wasmBytes` is optional: when absent it is downloaded from the URL OutLayer ran.
- * Returns {ok, steps:[{id, ok, label, detail}], local, onchain}.
+ * The checks a sealed ruling allows without its key: the verdict's ch is the SHA-256 of the criteria
+ * in the judge's input, its dh is the worker's commitment in that input, and its eh recomputes from
+ * its own fields (docs/interface.md, sections 3 and 6: every sealed verdict, error rows included,
+ * carries these ch and dh). The score itself can only be recomputed with the key.
  */
-export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner = runJudge, fetchImpl = globalThis.fetch, tx, rpc = TESTNET_ARCHIVAL_RPCS } = {}) {
+async function checkWithoutKey(input, verdict, step) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    parsed = null;
+  }
+  const criteria = typeof parsed?.criteria === "string" ? parsed.criteria : "";
+  const ch = await sha256Hex(new TextEncoder().encode(criteria));
+  step("ch", verdict.ch === ch, "The verdict's ch is the SHA-256 of the job's criteria", ch);
+  const dh = typeof parsed?.dh === "string" && /^[0-9a-f]{64}$/.test(parsed.dh) ? parsed.dh : await sha256Hex(new Uint8Array(0));
+  step("dh", verdict.dh === dh, "The verdict's dh is the worker's commitment in the judge's input", dh);
+  let eh;
+  try {
+    eh = await expectedEh(verdict);
+  } catch {
+    eh = "the verdict's fields cannot be read";
+  }
+  step("eh", eh === verdict.eh, "The evidence hash eh recomputes from the on-chain verdict", eh);
+}
+
+/**
+ * Check one ruling. `wasmBytes` is optional: when absent it is downloaded from the URL OutLayer ran.
+ * `job` ({escrow, jobId}, optional) also checks that the transaction's request_ruling call names
+ * that job. Returns {ok, steps:[{id, ok, label, detail}], local, onchain}; `ok` is true only when
+ * the judge was re-run here and matched. A sealed ruling without its key gets the checks that need
+ * none, a last step with ok null (not done), and needsKey: true.
+ */
+export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, job, runner = runJudge, fetchImpl = globalThis.fetch, tx, rpc = TESTNET_ARCHIVAL_RPCS } = {}) {
   const steps = [];
   const step = (id, ok, label, detail = "") => {
     steps.push({ id, ok, label, detail });
     return ok;
   };
-  const done = (extra = {}) => ({ ok: steps.every((s) => s.ok), steps, ...extra });
+  const done = (extra = {}) => ({ ok: steps.every((s) => s.ok === true), steps, ...extra });
 
   if (signer !== undefined && !step("signer", ruling.signer === signer, "OutLayer recorded the request for the account you entered", `recorded signer: ${ruling.signer}`)) return done();
+  if (job !== undefined) {
+    const where = tx ? rulingJob(tx, ruling) : { error: "no transaction to read the job from" };
+    const same = !where.error && where.escrow === job.escrow && where.jobId === job.jobId;
+    const detail = where.error ?? `the transaction asks for job ${where.jobId} of ${where.escrow}`;
+    if (!step("job", same, `The ruling was asked for job ${job.jobId} of ${job.escrow}`, detail)) return done();
+  }
   if (!step("source", Boolean(ruling.source), "The request names a wasm by URL and SHA-256", ruling.source ? ruling.source.url : "no WasmUrl source in the request")) return done();
   const published = PUBLISHED_JUDGES.get(ruling.source.hash);
   if (!step("published", Boolean(published), "That hash is a published Judge on NEAR build", published ?? `unknown hash ${ruling.source.hash}: not a Judge on NEAR ruling`)) return done();
@@ -254,8 +290,9 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner
   if (keyMissing) {
     step("key", true, "Sealed job ruled key_missing: OutLayer ran the judge without a key, so it is re-run without one");
   } else if (ruling.secretsRef && !env.JN_KEY) {
-    step("key", false, "Sealed job: the deliverable key is needed to re-run it", "only the client (after opening k) or the provider holds it");
-    return done();
+    await checkWithoutKey(input, ruling.verdict, step);
+    step("key", null, "Not re-run: the score needs the delivery key, which only the worker and, after a pass, the client hold");
+    return done({ needsKey: true });
   }
 
   let bytes = wasmBytes;
@@ -278,6 +315,19 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner
   const eh = await expectedEh(local);
   step("eh", eh === local.eh && eh === ruling.verdict.eh, "The evidence hash eh recomputes from the verdict fields", eh);
   return done({ local, onchain: ruling.verdict });
+}
+
+/**
+ * What a report amounts to: "verified" (re-run here and matched), "needs-key" (a sealed ruling
+ * checked without its key, nothing failed) or "failed" (a check failed, or anything unexplained).
+ */
+export function reportOutcome(report) {
+  const steps = report?.steps ?? [];
+  if (steps.length === 0) return "failed";
+  if (report.ok === true && steps.every((s) => s.ok === true)) return "verified";
+  const last = steps.at(-1);
+  const checked = steps.slice(0, -1).every((s) => s.ok === true);
+  return report.needsKey === true && last.id === "key" && last.ok === null && checked ? "needs-key" : "failed";
 }
 
 /** Fetch a transaction and verify the ruling in it. */
