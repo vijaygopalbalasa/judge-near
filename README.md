@@ -98,17 +98,18 @@ set `JN_ARCHIVAL_RPC` to use another.
 GitHub Pages. Or serve it yourself from the repository root with `python3 -m http.server 8080` and open
 http://localhost:8080/web/.
 
-- **Panel 1** reads the escrow live. Expected: "Runs the published escrow build" (code hash
+- **Try the judge** runs it on criteria and a delivery you type, after checking that the judge file is a published
+  build. It has four examples and names the problem in criteria the judge calls invalid.
+- **Jobs on the escrow** reads it live. Expected: "Runs the published escrow build" (code hash
   `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`) and "Its judge is judge v2" in green, and an amber line while the
   account still has its deploy key. Below that, one card per job, newest first, each with its rulings. FastNEAR's
   transaction index finds the rulings; the list in `web/escrow.js` stands in when it does not answer.
 - **Verify** on job 0's ruling gives eleven green checks and "Verified". A sealed ruling without its key gives nine
   green checks, a circle on the re-run, and "Consistent, not re-run". Jobs 2 to 4 sealed texts that jobs 0 and 1
   delivered in public, so their cards also offer **Verify on the disclosed text**, which re-runs them in full.
-- **Panel 2** re-runs any ruling transaction, with the delivery key or a disclosed delivery if you have one. A link of
-  the form `web/?tx=<hash>&signer=<account>` opens a ruling there; every ruling link in this README is one.
-- **Panel 3** runs the judge on criteria and a delivery you type, after checking that the judge file is a published
-  build. It has three examples and names the problem in criteria the judge calls invalid.
+- **Re-run any ruling** takes any ruling transaction, with the delivery key or a disclosed delivery if you have one,
+  pasted or loaded from a file. A link of the form `web/?tx=<hash>&signer=<account>` opens a ruling there; every
+  ruling link in this README is one.
 
 **3. Two agents, offline.** See [below](#two-agents-no-human): `node agent.mjs preview` shows the report the worker
 agent would deliver next, with the judge's verdict on it.
@@ -258,7 +259,7 @@ delivery, after the worker's own check said it would fail.
 | Judge (Rust, `wasm32-wasip1`) | Works, v2 (public and sealed jobs): 305 parity vectors against the original engine and 42 sealed vectors, fuel-bounded; the build reproduces byte for byte on macOS on Apple silicon |
 | Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for ten rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4 re-run in full on their disclosed text |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused |
-| Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for a ruling pasted into panel 2 it names who asked for it |
+| Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
 | Escrow (near-sdk 5), public and sealed jobs | Works: 112 unit tests, 13 sandbox tests, 79 planted bugs caught; deployed as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/jn.mjs`) | Works: create, fund, submit, sealed submit, ruling, open, verify, forget; checks criteria and deliveries with the judge before sending; checks the escrow's code and judge before any live step; every path run live on testnet |
 | Two agents (`agents/agent.mjs`) | Works: two passes and two fails live on testnet (jobs 5 to 8); 81 offline tests in `agents/` |

@@ -153,23 +153,32 @@ function jobCard(job, jobs, allRulings) {
   card.append(el("p", "meta", `${formatNear(job.amount)} · ${job.client} → ${job.provider}${when ? ` · created ${when}` : ""}`));
   card.append(el("p", "outcome", jobOutcome(job)));
   const disclosed = disclosedDelivery(job, jobs);
+  if (disclosed) card.append(el("p", "sealed-note", `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
+  // The delivery and the criteria fold away, so a phone shows each job's outcome and rulings without scrolling far.
+  const more = el("details");
+  more.append(el("summary", "", job.sealed ? "Delivery (sealed) and criteria" : "Delivery and criteria"));
   if (job.sealed) {
-    const note = job.deliverable_ct
-      ? `Delivery: sealed, on chain only as ciphertext (${job.deliverable_ct.length} base64 characters); the worker's commitment is dh ${short(job.dh, 8)}`
-      : "Delivery: sealed; nothing delivered yet.";
-    card.append(el("p", "sealed-note", note));
-    if (JOB_NOTES[job.id]) card.append(el("p", "sealed-note", JOB_NOTES[job.id]));
-    if (disclosed) card.append(el("p", "sealed-note", `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
+    more.append(el("p", "sealed-note", job.deliverable_ct
+      ? `Sealed: on chain only as ciphertext (${job.deliverable_ct.length} base64 characters); the worker's commitment is dh ${short(job.dh, 8)}`
+      : "Sealed; nothing delivered yet."));
+    if (JOB_NOTES[job.id]) more.append(el("p", "sealed-note", JOB_NOTES[job.id]));
   } else if (job.deliverable) {
-    const d = el("details");
-    d.append(el("summary", "", `Delivery (public, ${job.deliverable.length} characters)`), el("pre", "", job.deliverable));
-    card.append(d);
+    more.append(el("p", "meta", `Delivery, public, ${job.deliverable.length} characters:`), el("pre", "", job.deliverable));
+  } else {
+    more.append(el("p", "meta", "Nothing delivered yet."));
   }
-  const c = el("details");
-  c.append(el("summary", "", "Criteria"), el("pre", "", prettyCriteria(job.criteria)));
-  card.append(c);
+  let checks = [];
+  try {
+    checks = JSON.parse(job.criteria).checks ?? [];
+  } catch {
+    checks = [];
+  }
+  const kinds = el("ul", "facts");
+  kinds.replaceChildren(...(Array.isArray(checks) ? checks : []).map((c, i) => el("li", "", `${c?.kind ?? "?"}#${i}: ${describeCheck(c)}`)));
+  more.append(el("p", "meta", "Criteria:"), kinds, el("pre", "", prettyCriteria(job.criteria)));
+  card.append(more);
   const rulings = allRulings.filter((r) => r.job === job.id);
-  if (rulings.length === 0) card.append(el("p", "meta", "No ruling found for this job; to check one, paste its transaction in panel 2."));
+  if (rulings.length === 0) card.append(el("p", "meta", "No ruling found for this job; to check one, paste its transaction under \u201cRe-run any ruling\u201d below."));
   for (const r of rulings) card.append(rulingRow(r, disclosed));
   return card;
 }
@@ -256,7 +265,7 @@ $("tx-form").addEventListener("submit", (e) => {
   });
 });
 
-// Panel 3's examples fill both boxes and run the judge; editing either box drops the example's note.
+// The examples fill both boxes and run the judge; editing either box drops the example's note.
 let activeExample = null;
 for (const ex of EXAMPLES) {
   const button = el("button", "secondary", ex.label);
@@ -322,7 +331,7 @@ $("run-form").addEventListener("submit", async (e) => {
 
 loadJobs();
 
-// A link to one ruling, ?tx=<hash>&signer=<account>, opens the page with it checked in panel 2.
+// A link to one ruling, ?tx=<hash>&signer=<account>, opens the page with it checked under "Re-run any ruling".
 const link = parseDeepLink(location.search);
 if (link) {
   $("tx").value = link.tx;

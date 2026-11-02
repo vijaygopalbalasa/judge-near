@@ -283,6 +283,26 @@ export function summarizeTx(tx) {
   return { hash: t.hash, signer: t.signer_id, receiver: t.receiver_id, actions, status: failed ? "failure" : "success", failure: failed ? JSON.stringify(status.Failure) : undefined, receipts, outlayer };
 }
 
+/**
+ * A call's JSON arguments made readable: JSON nested inside strings (OutLayer's input_data, the criteria in it) is
+ * opened, up to three levels, and strings over 200 characters (a ciphertext) are shortened.
+ */
+export function expandJson(value, depth = 0) {
+  if (typeof value === "string") {
+    if (depth < 3 && /^\s*[[{]/.test(value)) {
+      try {
+        return expandJson(JSON.parse(value), depth + 1);
+      } catch {
+        // a string that only looks like JSON
+      }
+    }
+    return value.length > 200 ? `${value.slice(0, 64)}... (${value.length} characters)` : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => expandJson(v, depth));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, expandJson(v, depth)]));
+  return value;
+}
+
 /** Run the judge bytes on one input; returns the verdict text it prints. */
 export async function runJudge(wasmBytes, input, env = {}) {
   const module = await WebAssembly.compile(wasmBytes);

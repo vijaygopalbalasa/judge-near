@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rpcCall, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction, verifyWithDelivery } from "../verify.js";
+import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rpcCall, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction, verifyWithDelivery, expandJson } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -581,4 +581,13 @@ test("a ruling checked without a named job says who asked OutLayer for it: an es
   assert.deepEqual(viaEscrow.asker, { account: "judgenear-escrow.testnet", jobId: 2 });
   const named = await verifyTransaction("5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh", "judgenear-worker.testnet", { fetchImpl, wasmBytes: judge, delivery: text, job: { escrow: "judgenear-escrow.testnet", jobId: 2 } });
   assert.equal(named.steps.some((s) => s.id === "asker"), false, "with a named job, the job step says it");
+});
+
+test("expandJson opens JSON nested in strings, as OutLayer's input_data, and shortens long strings such as a ciphertext", () => {
+  const args = { source: { WasmUrl: { url: "https://x" } }, input_data: JSON.stringify({ criteria: '{"checks":[{"kind":"length"}]}', deliverable_ct: "Q".repeat(500), dh: "d".repeat(64) }) };
+  const out = expandJson(args);
+  assert.deepEqual(out.input_data.criteria, { checks: [{ kind: "length" }] }, "two levels of nesting opened");
+  assert.equal(out.input_data.deliverable_ct, `${"Q".repeat(64)}... (500 characters)`);
+  assert.equal(out.input_data.dh, "d".repeat(64), "a 64-character hash is kept whole");
+  assert.equal(expandJson("not json {"), "not json {");
 });

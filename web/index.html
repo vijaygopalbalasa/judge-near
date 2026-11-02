@@ -77,12 +77,11 @@
 <body>
 <main>
   <h1>Judge on NEAR</h1>
-  <p class="lead">A client locks payment in the escrow and writes the rules a delivery must meet. A judge, run by
-    OutLayer in a TEE, checks the delivery, and the escrow pays the worker or refunds the client. In sealed jobs the
-    delivery stays encrypted, and on a pass the key goes to the client in the same step as the payment.</p>
-  <p class="lead">Below: the escrow's jobs, read live from NEAR testnet, and a Verify button for each ruling. Verify
-    downloads the exact wasm OutLayer ran, checks its SHA-256, runs it here on the same input, and compares the verdict
-    with the one on chain. Nothing is sent anywhere except read requests to NEAR RPC nodes and the wasm URL.</p>
+  <p class="lead">Escrow for agent work. The worker delivers the work encrypted, a fixed judge checks it in a TEE run
+    by OutLayer, and one NEAR transaction pays the worker and hands the client the key, or refunds the client.</p>
+  <p class="lead">Try the judge below, then re-run any of the escrow's live rulings: Verify downloads the exact wasm
+    OutLayer ran, checks its SHA-256 and runs it here. This page only reads, from NEAR nodes, FastNEAR's transaction
+    index and the wasm's URL.</p>
   <figure class="flow">
     <a href="../docs/flow.svg" title="Open the diagram full size"><img src="../docs/flow.svg" width="960" height="500" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></a>
     <figcaption>Step 5 is one callback: the worker is paid and the client gets the key together, or the client is
@@ -90,14 +89,32 @@
   </figure>
 
   <section>
-    <h2>1. Jobs on <code id="escrow-name">judgenear-escrow.testnet</code></h2>
+    <h2>Try the judge</h2>
+    <form id="run-form">
+      <p class="hint">The same judge that rules on the escrow's jobs, run here in your browser. Pick an example, or
+        write your own criteria and delivery (the five kinds of check are listed in
+        <a href="https://github.com/vijaygopalbalasa/judge-near/blob/main/docs/interface.md#2-criteria-schema">docs/interface.md</a>):</p>
+      <div class="examples" id="examples"></div>
+      <label for="criteria">Criteria (JSON)</label>
+      <textarea id="criteria" spellcheck="false">{"checks":[{"kind":"length","params":{"min":3,"max":40}}]}</textarea>
+      <label for="deliverable">Deliverable</label>
+      <textarea id="deliverable" spellcheck="false">Hello NEAR, this is a test delivery.</textarea>
+      <button id="run-go" type="submit">Run the judge here</button>
+    </form>
+    <div id="run-summary" class="summary" role="status" aria-live="polite"></div>
+    <ol id="run-checks" class="steps"></ol>
+    <div id="run-out" class="verdict" hidden></div>
+  </section>
+
+  <section>
+    <h2>Jobs on <code id="escrow-name">judgenear-escrow.testnet</code>, live</h2>
     <ul id="escrow-facts" class="facts"></ul>
     <div id="jobs-status" class="summary" role="status" aria-live="polite">Reading the escrow from NEAR testnet...</div>
     <div id="jobs"></div>
   </section>
 
   <section>
-    <h2>2. Re-run any ruling from its transaction</h2>
+    <h2>Re-run any ruling from its transaction</h2>
     <form id="tx-form">
       <p class="hint">Any ruling transaction works; the default is job 0's ruling. The judge's very first run on OutLayer
         (judge v1, Nov 1 2026, called directly before the escrow existed) is
@@ -117,23 +134,6 @@
     </form>
     <div id="tx-summary" class="summary" role="status" aria-live="polite"></div>
     <ol id="tx-steps" class="steps"></ol>
-  </section>
-
-  <section>
-    <h2>3. Run the judge on your own job</h2>
-    <form id="run-form">
-      <p class="hint">Try an example, or write your own criteria and delivery (the five kinds of check are listed in
-        <a href="https://github.com/vijaygopalbalasa/judge-near/blob/main/docs/interface.md#2-criteria-schema">docs/interface.md</a>):</p>
-      <div class="examples" id="examples"></div>
-      <label for="criteria">Criteria (JSON)</label>
-      <textarea id="criteria" spellcheck="false">{"checks":[{"kind":"length","params":{"min":3,"max":40}}]}</textarea>
-      <label for="deliverable">Deliverable</label>
-      <textarea id="deliverable" spellcheck="false">Hello NEAR, this is a test delivery.</textarea>
-      <button id="run-go" type="submit">Run the judge here</button>
-    </form>
-    <div id="run-summary" class="summary" role="status" aria-live="polite"></div>
-    <ol id="run-checks" class="steps"></ol>
-    <div id="run-out" class="verdict" hidden></div>
   </section>
 
   <footer>
