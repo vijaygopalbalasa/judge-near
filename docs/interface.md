@@ -181,3 +181,18 @@ before it, as in section 3.
 With `response_format: "Json"` OutLayer re-serializes the judge's stdout, so the callback sees the same fields with
 keys sorted alphabetically. Parse by field name; `eh` is still defined over the canonical order of section 3, which a
 verifier rebuilds from the fields.
+
+### 6.6 Checking a sealed ruling on its disclosed delivery
+
+Once the plain delivery `D` is disclosed (by the worker, or by the client after a pass), anyone can re-run a sealed
+ruling without `K`. The row "decrypts and matches" in 6.3 is the public judge's verdict over `D`, plus `k` on a pass,
+so a verifier (`verifyWithDelivery` in `web/verify.js`, or `jn verify --delivery`):
+
+1. checks that sha256(`D`) equals the `dh` in the judge's input, the worker's commitment on chain;
+2. runs the published judge, with no key, on the public input `{"criteria": <the job's criteria>, "deliverable": D}`;
+3. compares every verdict field but `k` and `eh` with the on-chain verdict. `k` binds `K` to the client, and `eh`
+   covers `k`; on a fail there is no `k`, so the `eh` values match as well.
+
+A ruling the judge returned before opening `C` (`invalid_input`, `key_missing`, `bad_delivery`) cannot be checked
+this way, and the verifier refuses it. `too_large` can be: the escrow refuses criteria over 4,096 bytes and `C` over
+21,884 characters, so on chain it comes only from a plaintext over 16,384 bytes, which the public judge also refuses.

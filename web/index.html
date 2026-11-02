@@ -60,6 +60,8 @@
     .ruling { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
     .ruling-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 0.9rem; }
     .ruling-head button { margin-top: 0; padding: 8px 16px; }
+    .ruling-head .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button.secondary { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
     .ruling .summary { margin-top: 10px; font-size: 0.92rem; }
     footer { color: var(--muted); font-size: 0.88rem; }
     p.hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
@@ -96,6 +98,8 @@
       <input id="signer" required value="judgenear-worker.testnet" autocomplete="off" spellcheck="false">
       <label for="key">Sealed jobs only: the deliverable key (64 hex), after the client opened it</label>
       <input id="key" placeholder="leave empty for public jobs" autocomplete="off" spellcheck="false">
+      <label for="delivery">Or, for a sealed job whose delivery was disclosed: the delivery text, exactly (no key needed)</label>
+      <textarea id="delivery" placeholder="leave empty unless the worker or the client published the delivery" spellcheck="false"></textarea>
       <button id="tx-go" type="submit">Verify this ruling</button>
     </form>
     <div id="tx-summary" class="summary" role="status" aria-live="polite"></div>

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ESCROW, JOB_NOTES, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "../escrow.js";
+import { ESCROW, JOB_NOTES, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, disclosedDelivery, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "../escrow.js";
 import { TESTNET_ARCHIVAL_RPCS } from "../verify.js";
 import * as agentsConfig from "../../agents/lib/config.mjs";
 
@@ -183,4 +183,22 @@ test("every sealed demo job on the page says how secret its delivery is, as the 
   for (const n of Object.keys(JOB_NOTES).map(Number)) assert.ok(RULINGS.some((r) => r.job === n), `job ${n} has a ruling listed`);
   const prose = readme.replace(/\s+/g, " ");
   assert.ok(prose.includes("Only jobs 7 and 8 are unguessable."));
+});
+
+test("a sealed job's delivery is disclosed when a public job delivered text with the same dh", () => {
+  const jobs = [
+    { id: 0, sealed: false, dh: "a".repeat(64), deliverable: "public text" },
+    { id: 1, sealed: false, dh: null, deliverable: null },
+    { id: 2, sealed: true, dh: "a".repeat(64), deliverable_ct: "QUJD" },
+    { id: 3, sealed: true, dh: null, deliverable_ct: null },
+    { id: 4, sealed: true, dh: "c".repeat(64), deliverable_ct: "QUJD" },
+  ];
+  assert.deepEqual(disclosedDelivery(jobs[2], jobs), { text: "public text", fromJob: 0 });
+  assert.equal(disclosedDelivery(jobs[3], jobs), null, "nothing delivered yet: no dh to match, even against a public job with none");
+  assert.equal(disclosedDelivery(jobs[4], jobs), null);
+  assert.equal(disclosedDelivery(jobs[0], jobs), null, "a public job's delivery is already in its ruling's input");
+});
+
+test("the one ruling that never opened a delivery (job 4's key_missing) is marked, so the page offers no delivery check for it", () => {
+  assert.deepEqual(RULINGS.filter((r) => r.keyMissing).map((r) => [r.job, r.tx]), [[4, "J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3"]]);
 });

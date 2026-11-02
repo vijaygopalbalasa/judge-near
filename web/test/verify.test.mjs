@@ -546,3 +546,21 @@ test("every sealed vector the judge opened re-checks on its plaintext; rulings t
   }
   assert.equal(opened, 16, "10 passes, 2 scored fails, 2 invalid_criteria, too_large after decrypt, criteria of 4097 bytes");
 });
+
+test("verifyTransaction with a delivery: job 2's real sealed ruling re-checks in full on job 0's public text, and on nothing else", async () => {
+  // Job 2 sealed the text job 0 delivered in public (the same dh), so its delivery is already disclosed on chain.
+  const sealedTx = JSON.parse(readFileSync(path.join(root, "web/test/fixtures/tx-sealed-job2.json"), "utf8")).result;
+  const text = readFileSync(path.join(root, "web/test/fixtures/job0-delivery.txt"), "utf8");
+  const SEALED_TX = "5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh";
+  const { fetchImpl } = hostsAnswering({ [ARCHIVAL[0]]: answer(sealedTx) });
+  const job = { escrow: "judgenear-escrow.testnet", jobId: 2 };
+  const report = await verifyTransaction(SEALED_TX, "judgenear-worker.testnet", { fetchImpl, wasmBytes: judge, delivery: text, job });
+  assert.equal(reportOutcome(report), "verified", JSON.stringify(report.steps.filter((s) => s.ok !== true)));
+  assert.deepEqual(report.steps.map((s) => s.id).slice(-4), ["delivery", "hash", "rerun", "match"]);
+  assert.equal(report.local.pass, true);
+  const without = await verifyTransaction(SEALED_TX, "judgenear-worker.testnet", { fetchImpl, wasmBytes: judge, job });
+  assert.equal(reportOutcome(without), "needs-key", "without the delivery it is checked as far as the key allows");
+  const other = await verifyTransaction(SEALED_TX, "judgenear-worker.testnet", { fetchImpl, wasmBytes: judge, delivery: `${text}.`, job });
+  assert.equal(reportOutcome(other), "failed");
+  assert.equal(other.steps.at(-1).id, "delivery");
+});

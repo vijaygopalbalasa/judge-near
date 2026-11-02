@@ -1,5 +1,5 @@
 // Page wiring for web/index.html. All checking logic lives in verify.js; reading the escrow in escrow.js.
-import { ESCROW, JOB_NOTES, RULINGS, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "./escrow.js";
+import { ESCROW, JOB_NOTES, RULINGS, disclosedDelivery, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "./escrow.js";
 import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
@@ -54,9 +54,14 @@ function showOutcome(summary, report) {
   const outcome = reportOutcome(report);
   let line;
   let meaning = "";
-  if (outcome === "verified") {
+  const judge = report.steps.find((s) => s.id === "published")?.detail;
+  if (outcome === "verified" && report.steps.some((s) => s.id === "delivery")) {
     summary.className = "summary ok";
-    line = `Verified: ${report.steps.find((s) => s.id === "published").detail} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`;
+    line = `Verified on the disclosed delivery: ${judge} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`;
+    meaning = "The delivery hashes to the worker's commitment dh on chain, and the exact judge OutLayer ran, checked by its SHA-256, gives the same verdict on it here: pass, score, threshold, hashes and checks. No key was needed. The verdict's k and eh are not compared: they seal the key to the client.";
+  } else if (outcome === "verified") {
+    summary.className = "summary ok";
+    line = `Verified: ${judge} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`;
     meaning = "The exact judge OutLayer ran, downloaded and checked by its SHA-256, gives the same verdict here on the same input, field by field.";
   } else if (outcome === "needs-key") {
     summary.className = "summary note";
@@ -103,26 +108,35 @@ function prettyCriteria(text) {
   }
 }
 
-function rulingRow(r) {
+/** One listed ruling: a Verify button and, when the job's delivery is disclosed, a check on that text. */
+function rulingRow(r, disclosed) {
   const box = el("div", "ruling");
   const head = el("div", "ruling-head");
   const what = el("span");
   what.append("Ruling ", txLink(r.tx, r.signer), `, signed by ${r.signer}`);
+  const actions = el("span", "actions");
   const button = el("button", "", "Verify");
   button.type = "button";
-  head.append(what, button);
+  actions.append(button);
+  head.append(what, actions);
   const summary = el("div", "summary");
   summary.setAttribute("role", "status");
   summary.setAttribute("aria-live", "polite");
   const list = el("ol", "steps");
   box.append(head, summary, list);
-  button.addEventListener("click", () =>
-    runCheck(button, summary, list, () => verifyTransaction(r.tx, r.signer, { job: { escrow: ESCROW, jobId: r.job }, runner: runInWorker })),
-  );
+  const job = { escrow: ESCROW, jobId: r.job };
+  button.addEventListener("click", () => runCheck(button, summary, list, () => verifyTransaction(r.tx, r.signer, { job, runner: runInWorker })));
+  // A key_missing ruling never opened the delivery, so the text cannot re-check it; Verify re-runs it in full.
+  if (disclosed && !r.keyMissing) {
+    const onText = el("button", "secondary", "Verify on the disclosed text");
+    onText.type = "button";
+    actions.append(onText);
+    onText.addEventListener("click", () => runCheck(onText, summary, list, () => verifyTransaction(r.tx, r.signer, { job, runner: runInWorker, delivery: disclosed.text })));
+  }
   return box;
 }
 
-function jobCard(job) {
+function jobCard(job, jobs) {
   const card = el("article", "job");
   card.id = `job-${job.id}`;
   const head = el("div", "job-head");
@@ -131,12 +145,14 @@ function jobCard(job) {
   const when = formatTime(job.created_at_ns);
   card.append(el("p", "meta", `${formatNear(job.amount)} · ${job.client} → ${job.provider}${when ? ` · created ${when}` : ""}`));
   card.append(el("p", "outcome", jobOutcome(job)));
+  const disclosed = disclosedDelivery(job, jobs);
   if (job.sealed) {
     const note = job.deliverable_ct
       ? `Delivery: sealed, on chain only as ciphertext (${job.deliverable_ct.length} base64 characters); the worker's commitment is dh ${short(job.dh, 8)}`
       : "Delivery: sealed; nothing delivered yet.";
     card.append(el("p", "sealed-note", note));
     if (JOB_NOTES[job.id]) card.append(el("p", "sealed-note", JOB_NOTES[job.id]));
+    if (disclosed) card.append(el("p", "sealed-note", `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
   } else if (job.deliverable) {
     const d = el("details");
     d.append(el("summary", "", `Delivery (public, ${job.deliverable.length} characters)`), el("pre", "", job.deliverable));
@@ -147,7 +163,7 @@ function jobCard(job) {
   card.append(c);
   const rulings = RULINGS.filter((r) => r.job === job.id);
   if (rulings.length === 0) card.append(el("p", "meta", "No ruling of this job is listed on this page; paste its transaction in panel 2 to check it."));
-  for (const r of rulings) card.append(rulingRow(r));
+  for (const r of rulings) card.append(rulingRow(r, disclosed));
   return card;
 }
 
@@ -170,7 +186,7 @@ async function loadJobs() {
     status.className = "summary";
     const shown = escrow.jobs.slice(-MAX_CARDS).reverse();
     status.textContent = `${escrow.jobs.length} jobs, read at block ${escrow.blockHeight}; newest first${escrow.jobs.length > MAX_CARDS ? `, the ${MAX_CARDS} newest shown` : ""}.`;
-    $("jobs").replaceChildren(...shown.map(jobCard));
+    $("jobs").replaceChildren(...shown.map((job) => jobCard(job, escrow.jobs)));
   } catch (err) {
     status.className = "summary bad";
     status.textContent = `Could not read the escrow: ${err.message}`;
@@ -180,9 +196,15 @@ async function loadJobs() {
 $("tx-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const key = $("key").value.trim();
-  runCheck($("tx-go"), $("tx-summary"), $("tx-steps"), () =>
-    verifyTransaction($("tx").value.trim(), $("signer").value.trim(), { env: key ? { JN_KEY: key } : {}, runner: runInWorker }),
-  );
+  const delivery = $("delivery").value; // exactly as pasted: its SHA-256 must be the job's dh
+  if (key && delivery) {
+    $("tx-summary").className = "summary bad";
+    $("tx-summary").textContent = "Give the deliverable key or the disclosed delivery, not both.";
+    $("tx-steps").replaceChildren();
+    return;
+  }
+  const options = delivery ? { delivery, runner: runInWorker } : { env: key ? { JN_KEY: key } : {}, runner: runInWorker };
+  runCheck($("tx-go"), $("tx-summary"), $("tx-steps"), () => verifyTransaction($("tx").value.trim(), $("signer").value.trim(), options));
 });
 
 let judgeBytes;

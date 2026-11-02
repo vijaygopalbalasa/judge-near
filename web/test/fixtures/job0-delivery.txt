@@ -1,0 +1,3 @@
+Market note for the client. Agent payments on NEAR settle in USDC within seconds, and escrow keeps
+both sides honest: the worker is paid only when the delivery passes the agreed checks, and the client
+is refunded otherwise. This note covers fees, settlement time and the refund window.

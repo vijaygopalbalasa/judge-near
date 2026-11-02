@@ -469,12 +469,13 @@ export async function verifyWithDelivery(ruling, delivery, { wasmBytes, signer, 
   return done({ local, onchain: ruling.verdict });
 }
 
-/** Fetch a transaction and verify the ruling in it. */
+/** Fetch a transaction and verify the ruling in it; with options.delivery (text), on that disclosed delivery. */
 export async function verifyTransaction(txHash, signer, options = {}) {
   const tx = await fetchTransaction(txHash, signer, options);
   const ruling = findRuling(tx);
   if (!ruling) return { ok: false, steps: [{ id: "find", ok: false, label: "This transaction did not ask OutLayer to run anything", detail: "" }] };
-  const report = await verifyRuling(ruling, { ...options, signer, tx });
+  const { delivery, ...rest } = options;
+  const report = delivery === undefined ? await verifyRuling(ruling, { ...rest, signer, tx }) : await verifyWithDelivery(ruling, delivery, { ...rest, signer, tx });
   return { ...report, ruling };
 }
 

@@ -23,7 +23,7 @@ export const RULINGS = Object.freeze([
   { job: 1, tx: "GgZvjQg35vQfMsdRovKP6ze3faQyutKFkBDDzLm7JfCT", signer: "judgenear-client.testnet" },
   { job: 2, tx: "5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh", signer: "judgenear-worker.testnet" },
   { job: 3, tx: "3sCPetXoYFwuoyStnKmjZHiLnh1rBQW9nKNyGvyfCAib", signer: "judgenear-client.testnet" },
-  { job: 4, tx: "J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3", signer: "judgenear-worker.testnet" },
+  { job: 4, tx: "J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3", signer: "judgenear-worker.testnet", keyMissing: true },
   { job: 4, tx: "5G6jQja3xjvw6tnzkmpE3P86Sracs5PFStJJP38o4a2J", signer: "judgenear-worker.testnet" },
   { job: 5, tx: "5E4FiCfc1CQ7ywUeEDZ9jVMpkronjaCH4oNWWqM8hN71", signer: "judgenear-worker.testnet" },
   { job: 6, tx: "7rjHmFL8w9keTZVf1ybXVawxGTQibVdpkJxEWa2xCn7r", signer: "judgenear-worker.testnet" },
@@ -41,6 +41,16 @@ export const JOB_NOTES = Object.freeze({
   7: "The report ends with a random nonce, so its dh gives nothing away.",
   8: "The report ends with a random nonce, so its dh gives nothing away.",
 });
+
+/**
+ * The disclosed delivery of a sealed job, if a public job on the escrow delivered text with the same dh:
+ * {text, fromJob}, else null. The verifier still checks that the text hashes to dh before using it.
+ */
+export function disclosedDelivery(job, jobs) {
+  if (!job?.sealed || typeof job.dh !== "string" || !/^[0-9a-f]{64}$/.test(job.dh)) return null;
+  const open = jobs.find((p) => !p.sealed && p.dh === job.dh && typeof p.deliverable === "string");
+  return open ? { text: open.deliverable, fromJob: open.id } : null;
+}
 
 const PAGE_SIZE = 10;
 const MAX_PAGES = 100;

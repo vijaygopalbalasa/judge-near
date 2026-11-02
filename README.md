@@ -31,12 +31,12 @@ AI Security & Defense.
 | Part | State |
 |---|---|
 | Judge (Rust, `wasm32-wasip1`) | Works, v2 (public and sealed jobs): 305 parity vectors against the original engine plus 42 sealed vectors, fuel-bounded; the build reproduces byte for byte on macOS on Apple silicon (step 4) |
-| Judge running on OutLayer testnet | Works: v1 called directly ([tx 4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for ten rulings ([below](#the-escrow-on-testnet)); every public verdict identical to a local run, every sealed one consistent without the key and identical with it |
+| Judge running on OutLayer testnet | Works: v1 called directly ([tx 4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for ten rulings ([below](#the-escrow-on-testnet)); every public verdict identical to a local run, every sealed one consistent without the key and identical with it; the sealed rulings of jobs 2 to 4 also re-run in full on their disclosed text, with no key |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused (transactions below) |
-| Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Works: re-runs public rulings, sealed rulings with the delivery key, and key_missing rulings without one; the page lists the escrow's jobs live (newest first), with a Verify button for each ruling listed in `web/escrow.js`, and a sealed ruling without its key still gets the checks that need none |
+| Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Works: re-runs public rulings, sealed rulings with the delivery key or, once the delivery is disclosed, on that text with no key, and key_missing rulings without one; the page lists the escrow's jobs live (newest first), with a Verify button for each ruling listed in `web/escrow.js`, and a sealed ruling without its key still gets the checks that need none |
 | Escrow contract (near-sdk 5), public and sealed jobs | Works: 112 unit tests, 13 tests in the NEAR sandbox, 79 planted bugs caught (78 by the unit tests through `contract/scripts/mutate.py`, the 79th by the sandbox suite); deployed on testnet as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/`) | Works: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify, forget; runs the judge on a delivery before sending it; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; every path run live on testnet ([below](#the-escrow-on-testnet)) |
-| Two agents (`agents/agent.mjs`) | Works: a client agent posts and funds a sealed job, a worker agent fills the fields its criteria require from facts on chain, checks its report with the judge first, delivers it sealed, asks for the ruling, and deletes its vault key once the job settles; two passes and two fails run live on testnet (jobs 5 to 8, [below](#two-agents-no-human)); 76 offline tests in `agents/` |
+| Two agents (`agents/agent.mjs`) | Works: a client agent posts and funds a sealed job, a worker agent fills the fields its criteria require from facts on chain, checks its report with the judge first, delivers it sealed, asks for the ruling, and deletes its vault key once the job settles; two passes and two fails run live on testnet (jobs 5 to 8, [below](#two-agents-no-human)); 79 offline tests in `agents/` |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -89,11 +89,11 @@ published build.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
-| `node --test web/test/*.test.mjs` | 48 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 54 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (the pinned rustc 1.99.1) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed, about 5 minutes the first time and 1 to 2 after; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow; the first contract test run downloads the NEAR sandbox |
-| `cd agents && npm ci && npm test` | 76 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `cd agents && npm ci && npm test` | 79 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 | `python3 judge-wasm/scripts/mutate.py` | 56 of 56 planted bugs caught, one at a time (3 to 10 minutes) |
 | `python3 contract/scripts/mutate.py` | 78 of 78 planted bugs caught by the unit tests (15 to 30 minutes); the 79th, `#[private]` removed, is caught only by the sandbox suite and was checked by hand |
 
@@ -154,6 +154,9 @@ path remapping makes the hash independent of where you clone. The toolchain is r
   100-line WASI host, so a judge's work is checkable by anyone, not only by the parties. The page also lists the
   escrow's jobs, read live. Re-running a sealed score needs the delivery key; without it, the verifier still checks
   that the verdict's `ch`, `dh` and `eh` match the job's criteria, the worker's commitment and the verdict itself.
+  Once the worker or the client discloses the delivery, a sealed ruling re-runs in full with no key: the text must
+  hash to `dh`, and the judge's verdict on it must match the one on chain in every field but `k` and `eh`, which
+  seal the key to the client (the sealed judge scores an opened delivery with the same code as a public job).
 
 Where the delivery key lives, in a sealed job:
 
@@ -234,7 +237,9 @@ Every ruling above verifies with `node jn.mjs verify --tx <ruling> --signer <who
 are, the key_missing one without a key, and the sealed ones with `--as` the client (once the key is released) or the
 worker, whose saved key the tool loads in memory and hands only to the checked judge. Without `--as`, a sealed ruling
 gets only the checks that need no key and ends with "not re-run" (exit status 1); the page's Verify buttons do the
-same. Signers: jobs 1 and 3 were signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`.
+same. A sealed ruling whose delivery is disclosed also verifies with `--delivery <file>` and no key: jobs 2 to 4
+sealed the public texts of jobs 0 and 1, so the page shows "Verify on the disclosed text" for their rulings (all
+three verify in full), and any disclosed text can be pasted into panel 2. Signers: jobs 1 and 3 were signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`.
 
 Only jobs 7 and 8 are unguessable. Jobs 2 to 4 reuse the delivery texts of the public jobs (jobs 2 and 4 seal the text of
 job 0, job 3 the text of job 1), so their `dh` values match. Jobs 5 and 6 seal reports built only from public facts in a
