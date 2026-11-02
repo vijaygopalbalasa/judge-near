@@ -87,6 +87,9 @@ From the cargo-near scaffold: `opt-level = "z"`, `lto = true`, `codegen-units = 
 all amounts are NearToken / yoctoNEAR with saturating operations, so a wrap panics instead of
 silently corrupting a balance.
 
-## Not done here (by instruction)
+## Deployment
 
-No deployment, no testnet or mainnet account used, no commits. Deployment happens later, separately.
+This exact file is deployed on testnet as `judgenear-escrow.testnet`, deployed and initialised in one transaction
+(`FfrcKXWFetEq4pUt7WvoztNFQ1jsQusb2bP1rpdWoYva`) by `node tools/deploy-escrow.mjs --account <account> --send`, which
+checks this file's SHA-256 against the hex above and the judge URL's bytes against
+`judge-wasm/release/judge.wasm.sha256` before signing. NEAR reports the account's code hash as the base58 value above.
