@@ -14,6 +14,7 @@ import * as cfg from "./config.mjs";
 import { describeCall, describeDeposit, shortenDeep } from "./format.mjs";
 import { accessRule, eciesEncrypt, fetchKeystorePubkey, secretsProfile } from "./keystore.mjs";
 import { failedChecks, judgeHere } from "./local-judge.mjs";
+import { explainCriteria } from "../../web/criteria.js";
 import { loadClientKey, loadK, loadOrCreateK, saveClientKey } from "./secrets-store.mjs";
 import * as webVerify from "../../web/verify.js";
 
@@ -156,6 +157,11 @@ export async function create(opts, deps) {
     JSON.parse(criteria);
   } catch {
     throw new Error("the criteria file is not JSON");
+  }
+  // Criteria the judge calls invalid fail every delivery and refund the client: no worker could ever be paid.
+  if ((await judgeHere(criteria, "")).err === "invalid_criteria") {
+    const why = explainCriteria(criteria) ?? "see docs/interface.md, section 2";
+    throw new Error(`the judge, run here, calls these criteria invalid (${why}), so every delivery would fail; nothing sent`);
   }
   const expiresAtNs = ((BigInt(deps.now()) + parseDuration(opts["expires-in"])) * 1_000_000n).toString();
   const args = { provider, criteria, expires_at_ns: expiresAtNs };
@@ -437,7 +443,8 @@ export async function verify(opts, deps) {
     }, null, 2));
     return { dryRun: true };
   }
-  const delivery = deliveryFile === undefined ? undefined : utf8Text(readFileArg(deliveryFile, "--delivery"), "the delivery", cfg.MAX_DELIVERABLE_BYTES);
+  // Up to 64 KiB: a sealed delivery can open to 16,385 bytes, which the judge itself rules too_large.
+  const delivery = deliveryFile === undefined ? undefined : utf8Text(readFileArg(deliveryFile, "--delivery"), "the delivery", 65_536);
   const v = deps.verifier ?? webVerify;
   const tx = await v.fetchTransaction(txHash, signer, { rpc, fetchImpl: deps.fetch });
   const ruling = v.findRuling(tx);

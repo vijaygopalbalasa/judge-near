@@ -41,7 +41,7 @@ AI Security & Defense.
 | Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Works: re-runs public rulings, sealed rulings with the delivery key or, once the delivery is disclosed, on that text with no key, and key_missing rulings without one; the page lists the escrow's jobs live (newest first) with a Verify button for each ruling, found through FastNEAR's transaction index (the list in `web/escrow.js` stands in when the index does not answer), and a sealed ruling without its key still gets the checks that need none |
 | Escrow contract (near-sdk 5), public and sealed jobs | Works: 112 unit tests, 13 tests in the NEAR sandbox, 79 planted bugs caught (78 by the unit tests through `contract/scripts/mutate.py`, the 79th by the sandbox suite); deployed on testnet as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/`) | Works: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify, forget; runs the judge on a delivery before sending it; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; every path run live on testnet ([below](#the-escrow-on-testnet)) |
-| Two agents (`agents/agent.mjs`) | Works: a client agent posts and funds a sealed job, a worker agent fills the fields its criteria require from facts on chain, checks its report with the judge first, delivers it sealed, asks for the ruling, and deletes its vault key once the job settles; two passes and two fails run live on testnet (jobs 5 to 8, [below](#two-agents-no-human)); 79 offline tests in `agents/` |
+| Two agents (`agents/agent.mjs`) | Works: a client agent posts and funds a sealed job, a worker agent fills the fields its criteria require from facts on chain, checks its report with the judge first, delivers it sealed, asks for the ruling, and deletes its vault key once the job settles; two passes and two fails run live on testnet (jobs 5 to 8, [below](#two-agents-no-human)); 81 offline tests in `agents/` |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -94,11 +94,11 @@ published build.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
-| `node --test web/test/*.test.mjs` | 59 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 63 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib --locked` | 112 passed (the pinned rustc 1.99.1); building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed, about 5 minutes the first time and 1 to 2 after; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow; the first contract test run downloads the NEAR sandbox |
-| `cd agents && npm ci && npm test` | 79 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `cd agents && npm ci && npm test` | 81 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 | `python3 judge-wasm/scripts/mutate.py` | 56 of 56 planted bugs caught, one at a time (3 to 10 minutes) |
 | `python3 contract/scripts/mutate.py` | 78 of 78 planted bugs caught by the unit tests (10 to 30 minutes); the 79th, `#[private]` removed, is caught only by the sandbox suite (`on_ruling_is_private`), checked by planting it by hand |
 

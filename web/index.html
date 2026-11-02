@@ -42,7 +42,7 @@
     ul.facts { list-style: none; padding: 0; margin: 0 0 4px; font-size: 0.92rem; }
     ul.facts li { padding: 3px 0; overflow-wrap: anywhere; }
     ul.facts li .mark { display: inline-block; width: 1.4em; font-weight: 700; }
-    ul.facts li.ok .mark { color: var(--ok); } ul.facts li.bad .mark { color: var(--bad); }
+    ul.facts li.ok .mark { color: var(--ok); } ul.facts li.bad .mark { color: var(--bad); } ul.facts li.skip .mark { color: var(--note); }
     .job { border-top: 1px solid var(--line); padding: 18px 0 4px; }
     .job-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .job-head h3 { margin: 0 4px 0 0; font-size: 1.08rem; }
@@ -110,6 +110,9 @@
       <input id="key" placeholder="leave empty for public jobs" autocomplete="off" spellcheck="false">
       <label for="delivery">Or, for a sealed job whose delivery was disclosed: the delivery text, exactly (no key needed)</label>
       <textarea id="delivery" placeholder="leave empty unless the worker or the client published the delivery" spellcheck="false"></textarea>
+      <label for="delivery-file">or load the delivery from a file (keeps its exact bytes)</label>
+      <input id="delivery-file" type="file">
+      <p id="delivery-file-note" class="hint" aria-live="polite"></p>
       <button id="tx-go" type="submit">Verify this ruling</button>
     </form>
     <div id="tx-summary" class="summary" role="status" aria-live="polite"></div>
@@ -119,7 +122,8 @@
   <section>
     <h2>3. Run the judge on your own job</h2>
     <form id="run-form">
-      <p class="hint">Try an example, or write your own criteria and delivery:</p>
+      <p class="hint">Try an example, or write your own criteria and delivery (the five kinds of check are listed in
+        <a href="https://github.com/vijaygopalbalasa/judge-near/blob/main/docs/interface.md#2-criteria-schema">docs/interface.md</a>):</p>
       <div class="examples" id="examples"></div>
       <label for="criteria">Criteria (JSON)</label>
       <textarea id="criteria" spellcheck="false">{"checks":[{"kind":"length","params":{"min":3,"max":40}}]}</textarea>
@@ -128,6 +132,7 @@
       <button id="run-go" type="submit">Run the judge here</button>
     </form>
     <div id="run-summary" class="summary" role="status" aria-live="polite"></div>
+    <ol id="run-checks" class="steps"></ol>
     <div id="run-out" class="verdict" hidden></div>
   </section>
 

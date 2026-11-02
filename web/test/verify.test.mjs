@@ -564,3 +564,21 @@ test("verifyTransaction with a delivery: job 2's real sealed ruling re-checks in
   assert.equal(reportOutcome(other), "failed");
   assert.equal(other.steps.at(-1).id, "delivery");
 });
+
+// ---- who asked for a ruling: shown whenever no job is named, so a ruling from another contract cannot pass for one of the escrow's ----
+
+test("a ruling checked without a named job says who asked OutLayer for it: an escrow's job, or a direct call", async () => {
+  const direct = await verifyRuling(findRuling(tx), { wasmBytes: judgeV1, tx });
+  assert.equal(reportOutcome(direct), "verified");
+  const asker = direct.steps.find((s) => s.id === "asker");
+  assert.equal(asker?.label, "Asked for directly by judgeprotocol.testnet, not through an escrow");
+  const sealedTx = JSON.parse(readFileSync(path.join(root, "web/test/fixtures/tx-sealed-job2.json"), "utf8")).result;
+  const { fetchImpl } = hostsAnswering({ [ARCHIVAL[0]]: answer(sealedTx) });
+  const text = readFileSync(path.join(root, "web/test/fixtures/job0-delivery.txt"), "utf8");
+  const viaEscrow = await verifyTransaction("5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh", "judgenear-worker.testnet", { fetchImpl, wasmBytes: judge, delivery: text });
+  assert.equal(reportOutcome(viaEscrow), "verified");
+  assert.equal(viaEscrow.steps.find((s) => s.id === "asker")?.label, "Asked for by judgenear-escrow.testnet, job 2");
+  assert.deepEqual(viaEscrow.asker, { account: "judgenear-escrow.testnet", jobId: 2 });
+  const named = await verifyTransaction("5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh", "judgenear-worker.testnet", { fetchImpl, wasmBytes: judge, delivery: text, job: { escrow: "judgenear-escrow.testnet", jobId: 2 } });
+  assert.equal(named.steps.some((s) => s.id === "asker"), false, "with a named job, the job step says it");
+});
