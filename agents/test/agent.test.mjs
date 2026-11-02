@@ -14,8 +14,7 @@ import { publicFromSecret } from "../../judge-wasm/scripts/sealed.mjs";
 import { runJudge } from "../../web/verify.js";
 import { preview, runClient, runWorker } from "../lib/agent.mjs";
 import { COMMANDS } from "../lib/commands.mjs";
-import { PUBLISHED_ESCROW_CODE_HASH } from "../lib/config.mjs";
-import { eciesDecrypt, secretsProfile } from "../lib/keystore.mjs";
+import { fakeClock, fakeChain as makeChain } from "../lib/demo-chain.mjs";
 import { deliverableFor, escrowFacts } from "../lib/skill.mjs";
 
 const AGENTS = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -102,9 +101,7 @@ const CLIENT = "alice.testnet";
 const WORKER = "bob.testnet";
 const PASS_FILE = path.join(AGENTS, "tasks", "escrow-report.json");
 const FAIL_FILE = path.join(AGENTS, "tasks", "escrow-report-with-tvl.json");
-const JUDGE_HASH = fs.readFileSync(path.join(ROOT, "judge-wasm", "release", "judge.wasm.sha256"), "utf8").split(/\s+/)[0];
 const FAKE_NEAR_KEY = "ed25519:FAKEtestKeyNotReal7Qm2Wx9Zk4Lp8Rv3Ty6Ub1Nc5Hd0Gj";
-const b64 = (s) => Buffer.from(s).toString("base64");
 const DAY = 24 * 60 * 60 * 1000;
 const sha256hex = (x) => crypto.createHash("sha256").update(x).digest("hex");
 
@@ -129,18 +126,6 @@ function tempHome() {
   return home;
 }
 
-/** One clock for both roles: sleeping moves it forward and lets the other role run. */
-function fakeClock(start = 1_762_000_000_000) {
-  let t = start;
-  return {
-    now: () => t,
-    sleep: async (ms) => {
-      t += ms;
-      // One real millisecond per fake wait, so the fake clock cannot race far ahead of real work.
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    },
-  };
-}
 
 /** deps for one role, with a deterministic rng that records every 32-byte key it hands out. */
 function roleDeps(label, { home, chain, clock, tmpdir }) {
@@ -162,79 +147,8 @@ function jobView(extra) {
   return { client: CLIENT, provider: WORKER, criteria: "{}", ch: "", deliverable: "", dh: "", sealed: true, client_pk: "c".repeat(64), deliverable_ct: "", k: null, amount: "500000000000000000000000", state: "Completed", expires_at_ns: "1", attempt: "1", created_at_ns: "1", ...extra };
 }
 
-/** A stateful fake escrow and OutLayer: jobs advance as the agents call them; request_ruling runs the real judge with the K the fake keystore received. */
-function fakeChain(existing = [], { dropSecrets = false } = {}) {
-  const keystoreSecret = crypto.randomBytes(32);
-  const jobs = existing.map((j) => ({ ...j }));
-  const secrets = new Map();
-  const finals = new Map();
-  const calls = [];
-  let n = 0;
-  const near = {
-    codeHash: async () => PUBLISHED_ESCROW_CODE_HASH,
-    view: async (contract, method, args) => {
-      assert.equal(contract, ESCROW);
-      if (method === "get_judge") return { outlayer: "outlayer.testnet", url: "https://example.test/judge.wasm", hash: JUDGE_HASH, build_target: "wasm32-wasip1", min_ruling_deposit: "10000000000000000000000" };
-      if (method === "get_secrets_profile") return jobs[args.job_id]?.sealed ? secretsProfile(ESCROW, args.job_id) : null;
-      if (method === "get_job") return jobs[args.job_id] ? { ...jobs[args.job_id] } : null;
-      if (method === "list_jobs") return jobs.slice(args.from_index, args.from_index + args.limit).map((j) => ({ ...j }));
-      throw new Error(`unexpected view ${method}`);
-    },
-    call: async (signer, c) => {
-      const txHash = `tx${++n}`;
-      const a = c.args;
-      calls.push({ signer, contract: c.contractId, method: c.methodName, job: a.job_id });
-      const ok = (value) => ({ txHash, outcome: { status: { SuccessValue: value === undefined ? "" : b64(JSON.stringify(value)) } } });
-      if (c.contractId === "outlayer.testnet" && c.methodName === "store_secrets") {
-        if (!dropSecrets) secrets.set(a.profile, JSON.parse(eciesDecrypt(keystoreSecret, a.encrypted_secrets_base64)).JN_KEY);
-        return ok();
-      }
-      if (c.contractId === "outlayer.testnet" && c.methodName === "delete_secrets") {
-        assert.equal(c.depositYocto, "0");
-        secrets.delete(a.profile);
-        return ok();
-      }
-      assert.equal(c.contractId, ESCROW);
-      const j = jobs[a.job_id];
-      switch (c.methodName) {
-        case "create_job":
-          jobs.push(jobView({ client: signer, provider: a.provider, criteria: a.criteria, ch: sha256hex(a.criteria), sealed: Boolean(a.client_pk), client_pk: a.client_pk ?? null, amount: "0", state: "Open", expires_at_ns: a.expires_at_ns, attempt: "0" }));
-          return ok(jobs.length - 1);
-        case "fund":
-          assert.equal(j.client, signer);
-          assert.equal(j.state, "Open");
-          Object.assign(j, { amount: c.depositYocto, state: "Funded" });
-          return ok();
-        case "submit_sealed":
-          assert.equal(j.provider, signer);
-          assert.equal(j.state, "Funded");
-          Object.assign(j, { deliverable_ct: a.deliverable_ct, dh: a.dh, state: "Submitted" });
-          return ok();
-        case "request_ruling": {
-          assert.ok([j.client, j.provider].includes(signer));
-          assert.equal(j.state, "Submitted");
-          const key = secrets.get(secretsProfile(ESCROW, a.job_id));
-          const text = await runJudge(judge, JSON.stringify({ criteria: j.criteria, deliverable_ct: j.deliverable_ct, dh: j.dh, client_pk: j.client_pk }), key ? { JN_KEY: key } : {});
-          const verdict = JSON.parse(text);
-          j.attempt = String(Number(j.attempt) + 1);
-          if (verdict.err === "key_missing") j.state = "Submitted";
-          else if (verdict.pass) Object.assign(j, { state: "Completed", k: verdict.k });
-          else j.state = "Refunded";
-          finals.set(txHash, { status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "outlayer.testnet", logs: [], status: { SuccessValue: b64(text) } } }] });
-          return { txHash, outcome: {} };
-        }
-        default:
-          throw new Error(`unexpected call ${c.methodName}`);
-      }
-    },
-    txStatus: async (txHash) => {
-      if (!finals.has(txHash)) throw new Error("pending");
-      return finals.get(txHash);
-    },
-  };
-  const fetch = async () => ({ ok: true, json: async () => ({ pubkey: publicFromSecret(keystoreSecret).toString("hex") }) });
-  return { near, fetch, jobs, calls, secrets };
-}
+/** The shared stand-in escrow and OutLayer (lib/demo-chain.mjs), on this file's escrow account. */
+const fakeChain = (existing = [], opts = {}) => makeChain(existing, { escrow: ESCROW, ...opts });
 
 /** No 32-byte secret either role drew appears in any printed line, as hex or base64. */
 function assertNoSecretPrinted(lines, keys, who) {

@@ -12,7 +12,8 @@
     "jn": "./jn.mjs"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "demo": "node demo.mjs"
   },
   "dependencies": {
     "near-api-js": "7.3.1"

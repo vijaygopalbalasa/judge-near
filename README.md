@@ -115,8 +115,11 @@ http://localhost:8080/web/.
   pasted or loaded from a file. A link of the form `web/?tx=<hash>&signer=<account>` opens a ruling there; every
   ruling link in this README is one.
 
-**3. Two agents, offline.** See [below](#two-agents-no-human): `node agent.mjs preview` shows the report the worker
-agent would deliver next, with the judge's verdict on it.
+**3. The whole flow, offline.** `cd agents && npm run demo` runs both agents on an escrow and OutLayer kept in
+memory, with the real judge and real encryption: a pass, where the worker is paid and the client opens the exact
+report, then a fail, where the client is refunded and the key is never released. It takes a few seconds and needs no
+NEAR account. `node agent.mjs preview` shows what the worker agent would deliver for the next live job
+([below](#two-agents-no-human)).
 
 ## How it works
 
@@ -272,7 +275,7 @@ delivery, after the worker's own check said it would fail.
 | Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
 | Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 3), code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/jn.mjs`) | Works: create, fund, submit, sealed submit, ruling, open, verify, forget; checks criteria and deliveries with the judge before sending; checks the escrow's code and judge before any live step; every path run live on testnet |
-| Two agents (`agents/agent.mjs`) | Works: two passes and two fails live on testnet (jobs 5 to 8); 81 offline tests in `agents/` |
+| Two agents (`agents/agent.mjs`) | Works: two passes and two fails live on testnet (jobs 5 to 8), and both outcomes offline with `npm run demo`; 82 offline tests in `agents/` |
 
 **Run the tests.** Every row below also runs in CI on every push (`.github/workflows/test.yml`), except the two
 mutation runs.
@@ -284,7 +287,7 @@ mutation runs.
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib --locked` | 116 passed; building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 14 passed, 3 to 8 minutes; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow |
-| `cd agents && npm ci && npm test` | 81 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `cd agents && npm ci && npm test` | 82 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 | `python3 judge-wasm/scripts/mutate.py` | 56 of 56 planted bugs caught, one at a time (3 to 10 minutes) |
 | `python3 contract/scripts/mutate.py` | 82 of 82 planted bugs caught by the unit tests (10 to 30 minutes); the 83rd, `#[private]` removed, is caught only by the sandbox test `on_ruling_is_private`, checked by planting it by hand |
 
@@ -312,7 +315,9 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
 1. Remove the escrow's deploy key on testnet (one transaction), so its code can never change.
 2. Deploy the same build on mainnet, pointing at OutLayer's mainnet contract, `outlayer.near`.
 3. Whoever asks for a ruling pays OutLayer for the run; the first run cost 0.0011 NEAR. The escrow takes no fee.
-4. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each.
+4. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each, and
+   `npm run demo` shows the whole exchange offline. The agents' code (`agents/lib/`) runs against any object with
+   the same `near` and `fetch` methods, as `agents/lib/demo-chain.mjs` shows.
 
 ## Security model and honest limits
 
