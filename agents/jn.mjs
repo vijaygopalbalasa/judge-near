@@ -18,11 +18,17 @@ const USAGE = `usage: node jn.mjs <command> [options]   (escrow from JN_ESCROW; 
   ruling        --as CLIENT_OR_PROVIDER --job N
   open          --as CLIENT --job N [--out file]
   status        --job N
+  verify        --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER]
 
   --dry-run      print the exact call(s) and stop: no key is read, nothing is sent
   --min-deposit  (ruling --dry-run) NEAR amount to show instead of get_judge's
 
-  Live, every command except open and status first checks that the escrow runs the
+  verify re-runs a ruling here with the browser verifier's code and prints each check. A sealed
+  ruling needs the deliverable key: --as the job's client (after the key is released) or its
+  provider loads it from ~/.judge-near, in memory only. submit-sealed on a job that key_missing
+  sent back to Submitted stores the saved key again; then ask for a ruling again.
+
+  Live, every command except open, status and verify first checks that the escrow runs the
   published escrow build and the published judge, and ruling refuses a deposit above
   0.1 NEAR. To accept another build on purpose, name its exact hash:
   --escrow-code-hash  the escrow's base58 code hash
@@ -48,6 +54,8 @@ try {
       "judge-hash": { type: "string" },
       "escrow-code-hash": { type: "string" },
       "min-deposit": { type: "string" },
+      tx: { type: "string" },
+      signer: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });

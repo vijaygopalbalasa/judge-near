@@ -56,19 +56,27 @@ export function loadClientKey(home, account, clientPkHex) {
   return secret;
 }
 
+/** The provider's saved K for this job as { K, where }, or null when none is saved. Reads
+ *  only: creates no directory and no file. */
+export function loadK(home, account, escrow, jobId) {
+  if (!ACCOUNT_ID.test(account)) throw new Error(`not a NEAR account id: ${account}`);
+  if (!ACCOUNT_ID.test(escrow)) throw new Error(`not a NEAR account id: ${escrow}`);
+  const name = `K-${escrow}-${jobId}.json`;
+  const file = path.join(home, ".judge-near", account, name);
+  if (!fs.existsSync(file)) return null;
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const K = Buffer.from(String(saved.jn_key), "hex");
+  if (K.length !== 32 || saved.escrow !== escrow || saved.job_id !== jobId) throw new Error(`${shown(account, name)} is not a K for this job`);
+  return { K, where: shown(account, name) };
+}
+
 /** The provider's K for this job: reused if already saved (so a retry keeps the same key),
  *  otherwise 32 bytes from `rng`, saved before any transaction uses it. */
 export function loadOrCreateK(home, account, escrow, jobId, rng) {
-  if (!ACCOUNT_ID.test(escrow)) throw new Error(`not a NEAR account id: ${escrow}`);
+  const saved = loadK(home, account, escrow, jobId);
+  if (saved) return { ...saved, created: false };
   const name = `K-${escrow}-${jobId}.json`;
-  const file = path.join(accountDir(home, account), name);
-  if (fs.existsSync(file)) {
-    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-    const K = Buffer.from(String(saved.jn_key), "hex");
-    if (K.length !== 32 || saved.escrow !== escrow || saved.job_id !== jobId) throw new Error(`${shown(account, name)} is not a K for this job`);
-    return { K, created: false, where: shown(account, name) };
-  }
   const K = rng(32);
-  writeSecret(file, { escrow, job_id: jobId, jn_key: K.toString("hex") });
+  writeSecret(path.join(accountDir(home, account), name), { escrow, job_id: jobId, jn_key: K.toString("hex") });
   return { K, created: true, where: shown(account, name) };
 }

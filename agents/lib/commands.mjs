@@ -13,7 +13,8 @@ import { decryptDeliverable, encryptDeliverable, openK, publicFromSecret } from 
 import * as cfg from "./config.mjs";
 import { describeCall, describeDeposit, shortenDeep } from "./format.mjs";
 import { accessRule, eciesEncrypt, fetchKeystorePubkey, secretsProfile } from "./keystore.mjs";
-import { loadClientKey, loadOrCreateK, saveClientKey } from "./secrets-store.mjs";
+import { loadClientKey, loadK, loadOrCreateK, saveClientKey } from "./secrets-store.mjs";
+import * as webVerify from "../../web/verify.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -190,8 +191,25 @@ export async function submit(opts, deps) {
   return { txHash: r.txHash };
 }
 
+/** Live submit-sealed reads the job first: "submit" for a Funded job; "restore" for a job already
+ *  submitted with this deliverable, which is where key_missing leaves it (the judge found no key,
+ *  no money moved): the provider stores the same K again and asks for another ruling. Anything
+ *  else is refused before a K is saved or a transaction is sent. */
+function sealedSubmitMode(job, { escrow, jobId, signer, dh }) {
+  if (!job) throw new Error(`no job ${jobId} on ${escrow}`);
+  if (!job.sealed) throw new Error(`job ${jobId} is not sealed: use submit`);
+  if (job.provider !== signer) throw new Error(`job ${jobId} belongs to provider ${job.provider}, not ${signer}`);
+  if (job.state === "Funded") return "submit";
+  if (job.state === "Submitted") {
+    if (job.dh !== dh) throw new Error(`job ${jobId} was submitted with another deliverable (dh ${job.dh}); name the same file`);
+    return "restore";
+  }
+  throw new Error(`job ${jobId} is ${job.state}; submit-sealed needs a Funded job (or a Submitted one, to store its key again after key_missing)`);
+}
+
 /** submit-sealed --job N --file f: K, C and dh (section 6.1), K stored for the judge only
- *  (section 6.2), then submit_sealed. */
+ *  (section 6.2), then submit_sealed. On a job already submitted with this deliverable (after
+ *  key_missing) it stores the saved K again and sends nothing else. */
 export async function submitSealed(opts, deps) {
   const escrow = escrowOf(deps);
   const signer = accountArg(opts.as, "--as");
@@ -204,6 +222,7 @@ export async function submitSealed(opts, deps) {
   const localProfile = secretsProfile(escrow, jobId);
   let judgeHash;
   let profile;
+  let restore = false;
   if (dry) {
     judgeHash = opts["judge-hash"] ?? committedJudgeHash();
     profile = localProfile;
@@ -211,6 +230,8 @@ export async function submitSealed(opts, deps) {
     judgeHash = (await checkEscrow(opts, deps, escrow)).hash;
     profile = await deps.near.view(escrow, "get_secrets_profile", { job_id: jobId });
     if (profile !== localProfile) throw new Error(`the escrow names secrets profile ${profile}, expected ${localProfile}`);
+    const job = await deps.near.view(escrow, "get_job", { job_id: jobId });
+    restore = sealedSubmitMode(job, { escrow, jobId, signer, dh }) === "restore";
   }
   if (!HEX64.test(String(judgeHash))) throw new Error("the judge hash must be 64 lowercase hex");
 
@@ -219,12 +240,17 @@ export async function submitSealed(opts, deps) {
   let K;
   if (dry) {
     K = deps.rng(32);
+  } else if (restore) {
+    // Only the K that sealed the delivery on chain can open it; a new one would be useless.
+    const saved = loadK(deps.home, signer, escrow, jobId);
+    if (!saved) throw new Error(`job ${jobId} is already submitted, but no K for job ${jobId} is saved under ~/.judge-near/${signer}/; only the K that sealed the delivery on chain can open it`);
+    K = saved.K;
+    deps.out(`job ${jobId} is already submitted with this deliverable (key_missing leaves it so): storing the K saved at ${saved.where} for the judge again`);
   } else {
     const saved = loadOrCreateK(deps.home, signer, escrow, jobId, deps.rng);
     K = saved.K;
     deps.out(saved.created ? `new K for job ${jobId} saved to ${saved.where} (mode 0600)` : `reusing the K saved at ${saved.where}`);
   }
-  const deliverableCt = encryptDeliverable(K, plaintext, deps.rng(12));
 
   let encrypted;
   if (dry) {
@@ -247,6 +273,14 @@ export async function submitSealed(opts, deps) {
     access: accessRule(judgeHash, escrow),
     vault_id: null,
   }, cfg.GAS_TGAS.store_secrets, yocto(cfg.DEPOSIT_NEAR.store_secrets));
+  if (restore) {
+    printCall(deps, signer, store);
+    const r = await deps.near.call(signer, store);
+    deps.out(`store_secrets: tx ${r.txHash}`);
+    deps.out(`key stored again; ask for a ruling: node jn.mjs ruling --as ${signer} --job ${jobId}`);
+    return { dh, txHashes: [r.txHash], restored: true };
+  }
+  const deliverableCt = encryptDeliverable(K, plaintext, deps.rng(12));
   const submitCall = fnCall(escrow, "submit_sealed", { job_id: jobId, deliverable_ct: deliverableCt, dh },
     cfg.GAS_TGAS.submit_sealed, yocto(cfg.DEPOSIT_NEAR.submit_sealed));
   printCall(deps, signer, store);
@@ -340,6 +374,79 @@ export async function open(opts, deps) {
   return { outFile, bytes: plaintext.length };
 }
 
+/** A check's detail for the terminal: a verdict with its long values (k) shortened, else the text. */
+function showDetail(detail) {
+  const text = String(detail);
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return JSON.stringify(shortenDeep(parsed));
+  } catch {
+    // plain text, such as the judge's URL: shown whole
+  }
+  return text;
+}
+
+/** verify --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER]: the browser verifier's checks
+ *  (web/verify.js) from the command line. A sealed ruling is re-run with the deliverable key,
+ *  loaded here and kept in memory: --as the job's client (once k is released) or its provider.
+ *  The verifier hands the key only to a published judge build whose bytes it has just checked. */
+export async function verify(opts, deps) {
+  const txHash = String(opts.tx ?? "");
+  if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) throw new Error("--tx needs a transaction hash");
+  const signer = accountArg(opts.signer, "--signer");
+  const as = opts.as === undefined ? undefined : accountArg(opts.as, "--as");
+  const rpc = deps.env.JN_RPC || cfg.DEFAULT_RPC_URL;
+  if (opts["dry-run"]) {
+    deps.out(JSON.stringify({
+      verify: {
+        tx: txHash,
+        signer,
+        rpc,
+        then: "find the OutLayer run in the transaction, download the wasm it ran, check its SHA-256 against the run and the published judge builds, re-run it here on the same input, compare the verdicts field by field"
+          + (as ? `; a sealed ruling is re-run with the deliverable key, loaded as ${as} and kept in memory` : ""),
+      },
+    }, null, 2));
+    return { dryRun: true };
+  }
+  const v = deps.verifier ?? webVerify;
+  const tx = await v.fetchTransaction(txHash, signer, { rpc, fetchImpl: deps.fetch });
+  const ruling = v.findRuling(tx);
+  if (!ruling) throw new Error(`transaction ${txHash} did not ask OutLayer to run anything`);
+  const sealed = Boolean(ruling.secretsRef);
+  const keyMissing = sealed && ruling.verdict?.err === "key_missing"; // the judge ran without a key
+  const env = {};
+  if (sealed && !keyMissing && as !== undefined) {
+    const where = v.rulingJob(tx, ruling);
+    if (where.error) throw new Error(where.error);
+    const { escrow, jobId } = where;
+    const job = await deps.near.view(escrow, "get_job", { job_id: jobId });
+    if (!job?.sealed) throw new Error(`job ${jobId} on ${escrow} is not sealed`);
+    if (as === job.client) {
+      if (typeof job.k !== "string" || job.k.length !== 124) throw new Error(`no key released for job ${jobId} yet (state ${job.state})`);
+      const secret = loadClientKey(deps.home, as, job.client_pk);
+      env.JN_KEY = Buffer.from(openK(job.k, secret.toString("hex"))).toString("hex");
+    } else if (as === job.provider) {
+      const saved = loadK(deps.home, as, escrow, jobId);
+      if (!saved) throw new Error(`no K for job ${jobId} of ${escrow} is saved under ~/.judge-near/${as}/`);
+      env.JN_KEY = saved.K.toString("hex");
+    } else {
+      throw new Error(`--as must be the job's client ${job.client} or provider ${job.provider}`);
+    }
+    deps.out(`sealed ruling of job ${jobId}: re-running it with the deliverable key, loaded as ${as} and kept in memory`);
+  }
+  const report = await v.verifyRuling(ruling, { signer, tx, rpc, fetchImpl: deps.fetch, env });
+  for (const s of report.steps) deps.out(`${s.ok ? "ok  " : "FAIL"} ${s.label}${s.detail ? ` | ${showDetail(s.detail)}` : ""}`);
+  if (report.ok) {
+    const published = report.steps.find((s) => s.id === "published")?.detail;
+    deps.out(`Verified: ${published} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`);
+    return { ok: true };
+  }
+  if (sealed && !keyMissing && as === undefined) {
+    deps.out("This ruling is sealed: add --as <client> (after the key is released) or --as <provider> to re-run it with the deliverable key.");
+  }
+  throw new Error("not verified: see the check marked FAIL above");
+}
+
 /** status --job N */
 export async function status(opts, deps) {
   const escrow = escrowOf(deps);
@@ -370,4 +477,4 @@ export async function status(opts, deps) {
   return { job };
 }
 
-export const COMMANDS = { create, fund, submit, "submit-sealed": submitSealed, ruling, open, status };
+export const COMMANDS = { create, fund, submit, "submit-sealed": submitSealed, ruling, open, status, verify };

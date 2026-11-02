@@ -15,7 +15,7 @@ import { COMMANDS, rulingResult } from "../lib/commands.mjs";
 import { PUBLISHED_ESCROW_CODE_HASH } from "../lib/config.mjs";
 import { eciesDecrypt, secretsProfile } from "../lib/keystore.mjs";
 import { loadAccountKey } from "../lib/near.mjs";
-import { saveClientKey } from "../lib/secrets-store.mjs";
+import { loadOrCreateK, saveClientKey } from "../lib/secrets-store.mjs";
 
 const AGENTS = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.join(AGENTS, "..");
@@ -83,6 +83,7 @@ const DRY_RUNS = [
   ["ruling", { as: PROVIDER, job: "0" }, ["request_ruling", "300 Tgas", "get_judge.min_ruling_deposit"]],
   ["open", { as: CLIENT, job: "0" }, ["get_job"]],
   ["status", { job: "0" }, ["get_job"]],
+  ["verify", { tx: "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", signer: PROVIDER }, ["G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", "re-run"]],
 ];
 
 for (const [command, opts, expected] of DRY_RUNS) {
@@ -168,6 +169,7 @@ test("a sealed job end to end on a fake chain: secrets stay in ~/.judge-near (06
   assert.equal(calls.at(-1).depositYocto, "1000000000000000000000000");
 
   // The provider submits sealed: K saved first (0600), stored for the judge, then submit_sealed.
+  job = { client: CLIENT, provider: PROVIDER, criteria, sealed: true, client_pk: clientPk, state: "Funded", dh: "", deliverable_ct: "", k: null };
   const submitOut = await run("submit-sealed", { as: PROVIDER, job: "0", file: DELIVERABLE });
   const [store, submit] = calls.slice(-2);
   assert.equal(store.contractId, "outlayer.testnet");
@@ -298,6 +300,7 @@ test("jn.mjs --dry-run runs every subcommand from the command line, offline, pri
     [["ruling", "--as", PROVIDER, "--job", "0"], "request_ruling"],
     [["open", "--as", CLIENT, "--job", "0"], "get_job"],
     [["status", "--job", "0"], "get_job"],
+    [["verify", "--tx", "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", "--signer", PROVIDER], "re-run"],
   ]) {
     const r = cli(args);
     assert.equal(r.status, 0, `${args[0]}: ${r.stderr}`);
@@ -392,4 +395,211 @@ test("the escrow code hash the agents expect is the one contract/BUILD.md publis
   const m = /SHA-256 base58 \(NEAR code_hash form\): `([1-9A-HJ-NP-Za-km-z]{43,44})`/.exec(build);
   assert.ok(m, "contract/BUILD.md names the base58 code hash");
   assert.equal(PUBLISHED_ESCROW_CODE_HASH, m[1]);
+});
+
+// ---- submit-sealed reads the job first; after key_missing it stores the saved K again ----
+
+/** A fake chain for submit-sealed: the published builds, the given job, a fake keystore, a call recorder. */
+function sealedChain(job) {
+  const keystoreSecret = crypto.randomBytes(32);
+  const calls = [];
+  const near = {
+    codeHash: async () => ESCROW_CODE,
+    view: async (_c, method, args) => {
+      if (method === "get_judge") return { hash: JUDGE_HASH, min_ruling_deposit: "10000000000000000000000" };
+      if (method === "get_secrets_profile") return secretsProfile(ESCROW, args.job_id);
+      if (method === "get_job") return job;
+      throw new Error(`unexpected view ${method}`);
+    },
+    call: async (_signer, c) => {
+      calls.push(c);
+      return { txHash: `tx${calls.length}`, outcome: { status: { SuccessValue: "" } } };
+    },
+  };
+  const fetch = async () => ({ ok: true, json: async () => ({ pubkey: publicFromSecret(keystoreSecret).toString("hex") }) });
+  return { near, calls, fetch, keystoreSecret };
+}
+const sealedJob = (over = {}) => ({ client: CLIENT, provider: PROVIDER, sealed: true, client_pk: "c".repeat(64), state: "Funded", dh: "", deliverable_ct: "", k: null, ...over });
+const keyIn = (chain, call) => Buffer.from(JSON.parse(eciesDecrypt(chain.keystoreSecret, call.args.encrypted_secrets_base64)).JN_KEY, "hex");
+
+test("submit-sealed reads the job first and refuses one it cannot submit to, before saving a K or sending anything", async () => {
+  for (const [job, message] of [
+    [null, /no job 0 on escrow\.judgenear\.testnet/],
+    [sealedJob({ sealed: false, client_pk: null }), /job 0 is not sealed: use submit/],
+    [sealedJob({ provider: "carol.testnet" }), /job 0 belongs to provider carol\.testnet, not bob\.testnet/],
+    [sealedJob({ state: "Completed" }), /job 0 is Completed; submit-sealed needs a Funded job/],
+    [sealedJob({ state: "Ruling" }), /job 0 is Ruling; submit-sealed needs a Funded job/],
+  ]) {
+    const home = tempHome();
+    const chain = sealedChain(job);
+    const { deps } = makeDeps({ home, near: chain.near, fetch: chain.fetch });
+    await assert.rejects(COMMANDS["submit-sealed"]({ as: PROVIDER, job: "0", file: DELIVERABLE }, deps), message);
+    assert.equal(chain.calls.length, 0, `nothing may be sent (${message})`);
+    assert.ok(!fs.existsSync(path.join(home, ".judge-near")), `no K may be saved (${message})`);
+  }
+});
+
+test("after key_missing, submit-sealed stores the saved K again and sends nothing else", async () => {
+  const home = tempHome();
+  const job = sealedJob();
+  const chain = sealedChain(job);
+  const first = makeDeps({ home, near: chain.near, fetch: chain.fetch });
+  await COMMANDS["submit-sealed"]({ as: PROVIDER, job: "0", file: DELIVERABLE }, first.deps);
+  assert.deepEqual(chain.calls.map((c) => c.methodName), ["store_secrets", "submit_sealed"]);
+  const K = keyIn(chain, chain.calls[0]);
+
+  // The escrow took the delivery; the judge then found no key and the job went back to Submitted.
+  Object.assign(job, { state: "Submitted", dh: sha256hex(fs.readFileSync(DELIVERABLE)), deliverable_ct: chain.calls[1].args.deliverable_ct });
+  const again = makeDeps({ home, near: chain.near, fetch: chain.fetch });
+  await COMMANDS["submit-sealed"]({ as: PROVIDER, job: "0", file: DELIVERABLE }, again.deps);
+  assert.deepEqual(chain.calls.map((c) => c.methodName), ["store_secrets", "submit_sealed", "store_secrets"], "only the key is stored again");
+  const restore = chain.calls[2];
+  assert.equal(restore.contractId, "outlayer.testnet");
+  assert.equal(restore.args.profile, secretsProfile(ESCROW, 0));
+  assert.deepEqual(restore.args.access, chain.calls[0].args.access, "the same keystore rule");
+  assert.ok(keyIn(chain, restore).equals(K), "the same K that sealed the delivery on chain");
+  assert.deepEqual(decryptDeliverable(K, job.deliverable_ct), fs.readFileSync(DELIVERABLE));
+  const text = again.lines.join("\n");
+  assert.match(text, /job 0 is already submitted with this deliverable/);
+  assert.match(text, /node jn\.mjs ruling --as bob\.testnet --job 0/);
+  assertNoKeyMaterial(text, [K, ...again.keys, ...first.keys], "restore");
+});
+
+test("submit-sealed on a Submitted job refuses another deliverable, or a job whose K is not saved here, and sends nothing", async () => {
+  const submittedDh = sha256hex(fs.readFileSync(DELIVERABLE));
+  {
+    const home = tempHome();
+    loadOrCreateK(home, PROVIDER, ESCROW, 0, () => crypto.randomBytes(32));
+    const chain = sealedChain(sealedJob({ state: "Submitted", dh: submittedDh }));
+    const { deps } = makeDeps({ home, near: chain.near, fetch: chain.fetch });
+    await assert.rejects(COMMANDS["submit-sealed"]({ as: PROVIDER, job: "0", file: path.join(AGENTS, "examples", "deliverable-fail.txt") }, deps), /job 0 was submitted with another deliverable/);
+    assert.equal(chain.calls.length, 0);
+  }
+  {
+    const home = tempHome();
+    const chain = sealedChain(sealedJob({ state: "Submitted", dh: submittedDh }));
+    const { deps } = makeDeps({ home, near: chain.near, fetch: chain.fetch });
+    await assert.rejects(COMMANDS["submit-sealed"]({ as: PROVIDER, job: "0", file: DELIVERABLE }, deps), /no K for job 0 is saved/);
+    assert.equal(chain.calls.length, 0);
+    assert.ok(!fs.existsSync(path.join(home, ".judge-near")), "a new K could not open the delivery on chain, so none is made (looking writes nothing)");
+  }
+});
+
+// ---- verify: the browser verifier's checks, from the command line ----
+
+const TX = "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1";
+const OK_STEPS = [
+  { id: "published", ok: true, label: "That hash is a published Judge on NEAR build", detail: "judge v2 (public and sealed jobs), commit fd3dcc6" },
+  { id: "match", ok: true, label: "The local verdict equals the on-chain verdict, field by field", detail: "pass: true, score: 100" },
+];
+
+/** A fake verifier (web/verify.js's seam): records what verifyRuling receives. */
+function fakeVerifier(ruling, report = { ok: true, steps: OK_STEPS, local: { pass: true, score: 100 } }) {
+  const seen = { fetch: [], verify: [] };
+  const verifier = {
+    fetchTransaction: async (txHash, signer, o) => {
+      seen.fetch.push({ txHash, signer, rpc: o.rpc });
+      return { transaction: { receiver_id: ESCROW } };
+    },
+    findRuling: () => ruling,
+    rulingJob: () => ({ escrow: ESCROW, jobId: 0 }),
+    verifyRuling: async (_r, o) => {
+      seen.verify.push({ env: o.env, signer: o.signer, rpc: o.rpc });
+      return report;
+    },
+  };
+  return { verifier, seen };
+}
+const publicRuling = { secretsRef: null, verdict: { v: 1, pass: true, score: 100 } };
+const sealedRulingOf = (verdict = { v: 1, pass: true, score: 100 }) => ({ secretsRef: { profile: secretsProfile(ESCROW, 0), account_id: PROVIDER }, verdict });
+
+test("verify a public ruling: prints each check and the result, loads no key even with --as", async () => {
+  const home = tempHome();
+  const { verifier, seen } = fakeVerifier(publicRuling);
+  const { deps, lines } = makeDeps({ home, near: OFFLINE_NEAR, fetch: offline });
+  deps.verifier = verifier;
+  deps.env.JN_RPC = "https://rpc.example.test";
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, as: CLIENT }, deps);
+  assert.deepEqual(seen.fetch, [{ txHash: TX, signer: PROVIDER, rpc: "https://rpc.example.test" }]);
+  assert.deepEqual(seen.verify[0].env, {}, "a public ruling never gets a key");
+  const text = lines.join("\n");
+  assert.match(text, /ok {3}That hash is a published Judge on NEAR build \| judge v2/);
+  assert.match(text, /Verified: judge v2 \(public and sealed jobs\), commit fd3dcc6 computes exactly this ruling \(pass: true, score: 100\)\./);
+  assert.ok(!fs.existsSync(path.join(home, ".judge-near")), "no secret is touched");
+});
+
+test("verify --as CLIENT opens k in memory and hands K only to the verifier", async () => {
+  const home = tempHome();
+  const clientSecret = crypto.randomBytes(32);
+  const clientPk = publicFromSecret(clientSecret).toString("hex");
+  saveClientKey(home, CLIENT, clientPk, clientSecret);
+  const K = crypto.randomBytes(32);
+  const k = sealK(K, clientPk, "a".repeat(64), "b".repeat(64));
+  const near = { view: async (c, method, args) => {
+    assert.deepEqual([c, method, args], [ESCROW, "get_job", { job_id: 0 }]);
+    return { client: CLIENT, provider: PROVIDER, sealed: true, client_pk: clientPk, k, state: "Completed" };
+  } };
+  const { verifier, seen } = fakeVerifier(sealedRulingOf());
+  const { deps, lines } = makeDeps({ home, near, fetch: offline });
+  deps.verifier = verifier;
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, as: CLIENT }, deps);
+  assert.deepEqual(seen.verify[0].env, { JN_KEY: K.toString("hex") });
+  assertNoKeyMaterial(lines.join("\n"), [K, clientSecret], "verify --as client");
+});
+
+test("verify --as PROVIDER uses the K saved for that job", async () => {
+  const home = tempHome();
+  const K = crypto.randomBytes(32);
+  loadOrCreateK(home, PROVIDER, ESCROW, 0, () => K);
+  const near = { view: async () => ({ client: CLIENT, provider: PROVIDER, sealed: true, client_pk: "c".repeat(64), k: null, state: "Refunded" }) };
+  const { verifier, seen } = fakeVerifier(sealedRulingOf({ v: 1, pass: false, score: 50 }), { ok: true, steps: OK_STEPS, local: { pass: false, score: 50 } });
+  const { deps, lines } = makeDeps({ home, near, fetch: offline });
+  deps.verifier = verifier;
+  await COMMANDS.verify({ tx: TX, signer: CLIENT, as: PROVIDER }, deps);
+  assert.deepEqual(seen.verify[0].env, { JN_KEY: K.toString("hex") });
+  assertNoKeyMaterial(lines.join("\n"), [K], "verify --as provider");
+});
+
+test("verify refuses --as someone else, a client before k is released, or a provider with no saved K, and runs nothing", async () => {
+  const base = { client: CLIENT, provider: PROVIDER, sealed: true, client_pk: "c".repeat(64), k: null, state: "Submitted" };
+  for (const [as, message] of [
+    ["carol.testnet", /--as must be the job's client alice\.testnet or provider bob\.testnet/],
+    [CLIENT, /no key released for job 0 yet \(state Submitted\)/],
+    [PROVIDER, /no K for job 0 of escrow\.judgenear\.testnet is saved/],
+  ]) {
+    const home = tempHome();
+    const { verifier, seen } = fakeVerifier(sealedRulingOf());
+    const { deps } = makeDeps({ home, near: { view: async () => base }, fetch: offline });
+    deps.verifier = verifier;
+    await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER, as }, deps), message);
+    assert.equal(seen.verify.length, 0, `${as}: the verifier must not run`);
+  }
+});
+
+test("verify a key_missing ruling loads no key: the judge ran without one", async () => {
+  const home = tempHome();
+  const { verifier, seen } = fakeVerifier(sealedRulingOf({ v: 1, pass: false, score: 0, err: "key_missing" }), { ok: true, steps: OK_STEPS, local: { pass: false, score: 0 } });
+  const { deps } = makeDeps({ home, near: { view: offline }, fetch: offline });
+  deps.verifier = verifier;
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, as: CLIENT }, deps);
+  assert.deepEqual(seen.verify[0].env, {});
+  assert.ok(!fs.existsSync(path.join(home, ".judge-near")));
+});
+
+test("verify fails when a check fails, and a sealed ruling without --as says how to give the key", async () => {
+  const failed = { ok: false, steps: [{ id: "key", ok: false, label: "Sealed job: the deliverable key is needed to re-run it", detail: "only the client (after opening k) or the provider holds it" }] };
+  const { verifier } = fakeVerifier(sealedRulingOf(), failed);
+  const { deps, lines } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  deps.verifier = verifier;
+  await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /not verified/);
+  const text = lines.join("\n");
+  assert.match(text, /FAIL Sealed job: the deliverable key is needed to re-run it/);
+  assert.match(text, /add --as <client> \(after the key is released\) or --as <provider>/);
+});
+
+test("verify refuses a malformed transaction hash and a transaction with no OutLayer run", async () => {
+  const { deps } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  await assert.rejects(COMMANDS.verify({ tx: "not-a-hash", signer: PROVIDER }, deps), /--tx needs a transaction hash/);
+  deps.verifier = fakeVerifier(null).verifier;
+  await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /did not ask OutLayer to run anything/);
 });
