@@ -13,6 +13,7 @@ import { decryptDeliverable, encryptDeliverable, openK, publicFromSecret } from 
 import * as cfg from "./config.mjs";
 import { describeCall, describeDeposit, shortenDeep } from "./format.mjs";
 import { accessRule, eciesEncrypt, fetchKeystorePubkey, secretsProfile } from "./keystore.mjs";
+import { failedChecks, judgeHere } from "./local-judge.mjs";
 import { loadClientKey, loadK, loadOrCreateK, saveClientKey } from "./secrets-store.mjs";
 import * as webVerify from "../../web/verify.js";
 
@@ -78,6 +79,22 @@ async function checkEscrow(opts, deps, escrow) {
   }
   deps.out(`escrow ${escrow}: code ${code}, judge ${judge.hash} (${byFlag ? "accepted by flag" : "the published builds"})`);
   return judge;
+}
+
+/** Live, before a delivery is sent: run the judge here on the job's criteria and this delivery. A delivery it would
+ *  fail, or criteria it calls invalid (any delivery would refund the client), is not sent: a public delivery is on
+ *  chain the moment it is submitted, so sending either would give the work away for nothing. --deliver-anyway sends
+ *  it all the same, after saying so. */
+async function judgeFirst(criteria, deliverable, opts, deps) {
+  const v = await judgeHere(criteria, deliverable);
+  let why;
+  if (v.err === "invalid_criteria") why = "the judge, run here, answers invalid_criteria for this job's criteria: any delivery would refund the client";
+  else if (v.err) why = `the judge, run here, answers ${v.err} for this delivery`;
+  else if (!v.pass) why = `the judge, run here, would fail this delivery (score ${v.score}${failedChecks(v) ? `: ${failedChecks(v)}` : ""})`;
+  else return v;
+  if (!opts["deliver-anyway"]) throw new Error(`${why}; nothing sent (add --deliver-anyway to send it)`);
+  deps.out(`${why}; sending it anyway (--deliver-anyway)`);
+  return v;
 }
 
 // ---- calls ----
@@ -186,6 +203,10 @@ export async function submit(opts, deps) {
   printCall(deps, signer, c);
   if (opts["dry-run"]) return { dryRun: true };
   await checkEscrow(opts, deps, escrow);
+  const job = await deps.near.view(escrow, "get_job", { job_id: jobId });
+  if (!job) throw new Error(`no job ${jobId} on ${escrow}`);
+  if (job.sealed) throw new Error(`job ${jobId} is sealed: use submit-sealed`);
+  await judgeFirst(job.criteria, deliverable, opts, deps);
   const r = await deps.near.call(signer, c);
   deps.out(`job ${jobId} submitted (dh ${sha256hex(Buffer.from(deliverable, "utf8"))}); tx ${r.txHash}`);
   return { txHash: r.txHash };
@@ -216,7 +237,7 @@ export async function submitSealed(opts, deps) {
   const jobId = jobOf(opts);
   const dry = Boolean(opts["dry-run"]);
   const plaintext = readFileArg(opts.file, "--file");
-  utf8Text(plaintext, "the deliverable", cfg.MAX_DELIVERABLE_BYTES); // the judge would call anything else bad_delivery
+  const text = utf8Text(plaintext, "the deliverable", cfg.MAX_DELIVERABLE_BYTES); // the judge would call anything else bad_delivery
   const dh = sha256hex(plaintext);
 
   const localProfile = secretsProfile(escrow, jobId);
@@ -232,6 +253,7 @@ export async function submitSealed(opts, deps) {
     if (profile !== localProfile) throw new Error(`the escrow names secrets profile ${profile}, expected ${localProfile}`);
     const job = await deps.near.view(escrow, "get_job", { job_id: jobId });
     restore = sealedSubmitMode(job, { escrow, jobId, signer, dh }) === "restore";
+    await judgeFirst(job.criteria, text, opts, deps);
   }
   if (!HEX64.test(String(judgeHash))) throw new Error("the judge hash must be 64 lowercase hex");
 
@@ -482,4 +504,32 @@ export async function status(opts, deps) {
   return { job };
 }
 
-export const COMMANDS = { create, fund, submit, "submit-sealed": submitSealed, ruling, open, status, verify };
+/** forget --job N: once a sealed job has settled, its provider deletes the delivery key from OutLayer's vault, so no
+ *  later request can read it (delete_secrets takes no deposit and refunds the storage one). */
+export async function forget(opts, deps) {
+  const escrow = escrowOf(deps);
+  const signer = accountArg(opts.as, "--as");
+  const jobId = jobOf(opts);
+  const dry = Boolean(opts["dry-run"]);
+  const localProfile = secretsProfile(escrow, jobId);
+  let judgeHash = opts["judge-hash"] ?? committedJudgeHash();
+  let profile = localProfile;
+  if (!dry) {
+    const job = await deps.near.view(escrow, "get_job", { job_id: jobId });
+    if (!job) throw new Error(`no job ${jobId} on ${escrow}`);
+    if (!job.sealed) throw new Error(`job ${jobId} is not sealed: there is no key to delete`);
+    if (job.provider !== signer) throw new Error(`job ${jobId} belongs to provider ${job.provider}, not ${signer}`);
+    if (job.state !== "Completed" && job.state !== "Refunded") throw new Error(`job ${jobId} is ${job.state}; its key is deleted only once the job has settled`);
+    judgeHash = (await checkEscrow(opts, deps, escrow)).hash;
+    profile = await deps.near.view(escrow, "get_secrets_profile", { job_id: jobId });
+    if (profile !== localProfile) throw new Error(`the escrow names secrets profile ${profile}, expected ${localProfile}`);
+  }
+  const c = fnCall(cfg.OUTLAYER, "delete_secrets", { accessor: { WasmHash: { hash: judgeHash } }, profile }, cfg.GAS_TGAS.delete_secrets, "0");
+  printCall(deps, signer, c);
+  if (dry) return { dryRun: true };
+  const r = await deps.near.call(signer, c);
+  deps.out(`job ${jobId}: the worker's key is deleted from OutLayer's vault; tx ${r.txHash}`);
+  return { txHash: r.txHash };
+}
+
+export const COMMANDS = { create, fund, submit, "submit-sealed": submitSealed, ruling, open, status, verify, forget };

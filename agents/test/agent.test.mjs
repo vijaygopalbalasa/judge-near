@@ -189,6 +189,11 @@ function fakeChain(existing = [], { dropSecrets = false } = {}) {
         if (!dropSecrets) secrets.set(a.profile, JSON.parse(eciesDecrypt(keystoreSecret, a.encrypted_secrets_base64)).JN_KEY);
         return ok();
       }
+      if (c.contractId === "outlayer.testnet" && c.methodName === "delete_secrets") {
+        assert.equal(c.depositYocto, "0");
+        secrets.delete(a.profile);
+        return ok();
+      }
       assert.equal(c.contractId, ESCROW);
       const j = jobs[a.job_id];
       switch (c.methodName) {
@@ -228,7 +233,7 @@ function fakeChain(existing = [], { dropSecrets = false } = {}) {
     },
   };
   const fetch = async () => ({ ok: true, json: async () => ({ pubkey: publicFromSecret(keystoreSecret).toString("hex") }) });
-  return { near, fetch, jobs, calls };
+  return { near, fetch, jobs, calls, secrets };
 }
 
 /** No 32-byte secret either role drew appears in any printed line, as hex or base64. */
@@ -300,7 +305,9 @@ test("two agents, no human: the client posts and funds a sealed job, the worker 
     [WORKER, "store_secrets", undefined],
     [WORKER, "submit_sealed", id],
     [WORKER, "request_ruling", id],
+    [WORKER, "delete_secrets", undefined],
   ]);
+  assert.equal(chain.secrets.size, 0, "once the job settles, the worker's key is gone from the vault");
   const opened = fs.readFileSync(c.out, "utf8");
   assert.equal(path.dirname(c.out), outDir);
   assert.equal(sha256hex(opened), job.dh);
@@ -323,6 +330,8 @@ test("the fail run (--deliver-anyway): the client requires a field the worker ca
   assert.deepEqual(w.missing, ["mainnet_tvl_usd"]);
   assert.equal(chain.jobs[0].state, "Refunded");
   assert.equal(chain.jobs[0].k, null);
+  assert.equal(chain.calls.at(-1).method, "delete_secrets", "a refunded delivery's key is deleted too");
+  assert.equal(chain.secrets.size, 0);
   assert.deepEqual(fs.readdirSync(outDir), [], "nothing is opened");
   assert.match(client.lines.join("\n"), /job 0: refunded; the key was never released, so the delivery stays sealed/);
   const workerText = worker.lines.join("\n");
@@ -447,6 +456,7 @@ test("a key_missing ruling is reported as what it is: no key reached the judge, 
   const result = await runWorker({ as: WORKER, once: true }, deps);
   assert.equal(result.verdict.err, "key_missing");
   assert.equal(chain.jobs[0].state, "Submitted");
+  assert.ok(!chain.calls.some((x) => x.method === "delete_secrets"), "the job is not settled, so its key is kept for the next ruling");
   const text = lines.join("\n");
   assert.match(text, /job 0: no key reached the judge \(key_missing\); no money moved and the job is back at Submitted/);
   assert.doesNotMatch(text, /refunded/);

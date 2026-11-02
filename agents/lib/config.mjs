@@ -32,6 +32,7 @@ export const GAS_TGAS = {
   submit: "30",
   submit_sealed: "30",
   store_secrets: "50",
+  delete_secrets: "30",
   request_ruling: "300",
 };
 

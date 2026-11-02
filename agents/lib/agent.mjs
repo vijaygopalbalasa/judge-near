@@ -7,15 +7,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { nearToYocto } from "near-api-js";
 import { formatNear } from "../../web/escrow.js";
-import { runJudge } from "../../web/verify.js";
 import { COMMANDS } from "./commands.mjs";
 import { ACCOUNT_ID } from "./config.mjs";
+import { failedChecks, judgeHere } from "./local-judge.mjs";
 import { deliverableFor, escrowFacts } from "./skill.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = 10;
 const POLL_MS = 5_000;
 const SETTLED = new Set(["Completed", "Refunded"]);
@@ -27,13 +25,6 @@ export function printable(text) {
 }
 const say = (deps, text) => deps.out(printable(text));
 
-let judgeBytes;
-/** The published judge (judge-wasm/release/judge.wasm), run here on a plain report: the same checks OutLayer runs on the decrypted delivery. */
-async function judgeHere(criteria, deliverable) {
-  judgeBytes ??= new Uint8Array(fs.readFileSync(path.join(HERE, "..", "..", "judge-wasm", "release", "judge.wasm")));
-  return JSON.parse(await runJudge(judgeBytes, JSON.stringify({ criteria, deliverable })));
-}
-const failedChecks = (verdict) => (verdict.checks ?? []).filter((c) => !c.ok).map((c) => `${c.id} failed`).join(", ");
 
 const minutes = (ms) => (Math.round(ms / 60_000) === 1 ? "1 minute" : `${Math.round(ms / 60_000)} minutes`);
 
@@ -97,7 +88,7 @@ async function workOn(job, jobs, { escrow, me, minYocto, deliverAnyway }, deps) 
   try {
     const file = path.join(dir, `job-${job.id}.json`);
     fs.writeFileSync(file, report.text, { mode: 0o600, flag: "wx" });
-    await COMMANDS["submit-sealed"]({ as: me, job: String(job.id), file }, deps);
+    await COMMANDS["submit-sealed"]({ as: me, job: String(job.id), file, "deliver-anyway": deliverAnyway }, deps);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -109,6 +100,13 @@ async function workOn(job, jobs, { escrow, me, minYocto, deliverAnyway }, deps) 
     say(deps, `job ${job.id}: no key reached the judge (key_missing); no money moved and the job is back at Submitted; ruling tx ${ruling.txHash}`);
   } else {
     say(deps, `job ${job.id}: the judge ${v.pass ? "passed" : "failed"} it (score ${v.score}); ${v.pass ? "the escrow pays the worker and releases the key to the client" : "the client is refunded and the delivery stays sealed"}; ruling tx ${ruling.txHash}`);
+    // The job has settled: the vault copy of the key is no longer needed, and deleting it means no later request,
+    // from any caller, can have the judge read it.
+    try {
+      await COMMANDS.forget({ as: me, job: String(job.id) }, deps);
+    } catch (e) {
+      say(deps, `job ${job.id}: could not delete the key from the vault yet (${e.message}); run: node jn.mjs forget --as ${me} --job ${job.id}`);
+    }
   }
   return { jobId: job.id, rulingTx: ruling.txHash, verdict: v, missing: report.missing };
 }

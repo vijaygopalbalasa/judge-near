@@ -427,7 +427,8 @@ function sealedChain(job) {
   const fetch = async () => ({ ok: true, json: async () => ({ pubkey: publicFromSecret(keystoreSecret).toString("hex") }) });
   return { near, calls, fetch, keystoreSecret };
 }
-const sealedJob = (over = {}) => ({ client: CLIENT, provider: PROVIDER, sealed: true, client_pk: "c".repeat(64), state: "Funded", dh: "", deliverable_ct: "", k: null, ...over });
+const CRITERIA_TEXT = fs.readFileSync(CRITERIA, "utf8");
+const sealedJob = (over = {}) => ({ client: CLIENT, provider: PROVIDER, criteria: CRITERIA_TEXT, sealed: true, client_pk: "c".repeat(64), state: "Funded", dh: "", deliverable_ct: "", k: null, ...over });
 const keyIn = (chain, call) => Buffer.from(JSON.parse(eciesDecrypt(chain.keystoreSecret, call.args.encrypted_secrets_base64)).JN_KEY, "hex");
 
 test("submit-sealed reads the job first and refuses one it cannot submit to, before saving a K or sending anything", async () => {
@@ -680,4 +681,76 @@ test("jn.mjs --help says where verify reads from and how to change it", () => {
   assert.match(r.stdout, /archival/);
   assert.match(r.stdout, /JN_ARCHIVAL_RPC/);
   assert.match(r.stdout, /JN_RPC/);
+});
+
+// ---- forget: once a sealed job has settled, the worker deletes its key from OutLayer's vault ----
+
+test("forget deletes the worker's key from OutLayer's vault, only for a settled sealed job of this worker", async () => {
+  for (const state of ["Completed", "Refunded"]) {
+    const chain = sealedChain(sealedJob({ state }));
+    const { deps, lines } = makeDeps({ home: tempHome(), near: chain.near, fetch: chain.fetch });
+    const r = await COMMANDS.forget({ as: PROVIDER, job: "0" }, deps);
+    assert.equal(chain.calls.length, 1, state);
+    const c = chain.calls[0];
+    assert.equal(c.contractId, "outlayer.testnet");
+    assert.equal(c.methodName, "delete_secrets");
+    assert.deepEqual(c.args, { accessor: { WasmHash: { hash: JUDGE_HASH } }, profile: secretsProfile(ESCROW, 0) });
+    assert.equal(c.depositYocto, "0", "delete_secrets takes no deposit; it refunds the storage one");
+    assert.equal(r.txHash, "tx1");
+    assert.match(lines.join("\n"), /job 0: the worker's key is deleted from OutLayer's vault; tx tx1/);
+  }
+  for (const [job, as, message] of [
+    [sealedJob({ state: "Submitted" }), PROVIDER, /job 0 is Submitted; its key is deleted only once the job has settled/],
+    [sealedJob({ state: "Ruling" }), PROVIDER, /job 0 is Ruling; its key is deleted only once the job has settled/],
+    [sealedJob({ state: "Completed", provider: "carol.testnet" }), PROVIDER, /job 0 belongs to provider carol\.testnet, not bob\.testnet/],
+    [sealedJob({ state: "Completed", sealed: false, client_pk: null }), PROVIDER, /job 0 is not sealed: there is no key to delete/],
+    [null, PROVIDER, /no job 0 on escrow\.judgenear\.testnet/],
+  ]) {
+    const chain = sealedChain(job);
+    const { deps } = makeDeps({ home: tempHome(), near: chain.near, fetch: chain.fetch });
+    await assert.rejects(COMMANDS.forget({ as, job: "0" }, deps), message);
+    assert.equal(chain.calls.length, 0, "nothing is sent");
+  }
+});
+
+test("forget --dry-run prints the delete_secrets call and touches nothing", async () => {
+  const { deps, lines } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  await COMMANDS.forget({ as: PROVIDER, job: "3", "dry-run": true }, deps);
+  const text = lines.join("\n");
+  assert.match(text, /delete_secrets/);
+  assert.match(text, new RegExp(secretsProfile(ESCROW, 3)));
+});
+
+// ---- before sending a delivery, the worker's tool runs the judge on it: a client cannot get free work ----
+
+const FAIL_FILE = path.join(AGENTS, "examples", "deliverable-fail.txt");
+const INVALID_CRITERIA = '{"checks":[{"kind":"length","params":{"max":2000,"unit":"words"},"note":"harmless-looking"}]}';
+
+test("submit and submit-sealed run the judge on the job's criteria first, and send nothing for a delivery it would fail", async () => {
+  for (const [cmd, job] of [["submit", sealedJob({ sealed: false, client_pk: null })], ["submit-sealed", sealedJob()]]) {
+    const home = tempHome();
+    const chain = sealedChain(job);
+    const { deps, lines } = makeDeps({ home, near: chain.near, fetch: chain.fetch });
+    await assert.rejects(COMMANDS[cmd]({ as: PROVIDER, job: "0", file: FAIL_FILE }, deps), /the judge, run here, would fail this delivery \(score \d+: contains#1 failed\); nothing sent \(add --deliver-anyway to send it\)/, cmd);
+    assert.equal(chain.calls.length, 0, `${cmd}: nothing sent`);
+    assert.ok(!fs.existsSync(path.join(home, ".judge-near")), `${cmd}: no key saved`);
+    assert.doesNotMatch(lines.join("\n"), /submitted/);
+  }
+});
+
+test("criteria the judge calls invalid would only refund the client: submit refuses them, so a client cannot get public work for free", async () => {
+  for (const [cmd, sealed] of [["submit", false], ["submit-sealed", true]]) {
+    const chain = sealedChain(sealedJob({ criteria: INVALID_CRITERIA, sealed, client_pk: sealed ? "c".repeat(64) : null }));
+    const { deps } = makeDeps({ home: tempHome(), near: chain.near, fetch: chain.fetch });
+    await assert.rejects(COMMANDS[cmd]({ as: PROVIDER, job: "0", file: DELIVERABLE }, deps), /the judge, run here, answers invalid_criteria for this job's criteria: any delivery would refund the client; nothing sent/, cmd);
+    assert.equal(chain.calls.length, 0);
+  }
+});
+
+test("--deliver-anyway sends a delivery the judge would fail, after saying so", async () => {
+  const chain = sealedChain(sealedJob({ sealed: false, client_pk: null }));
+  const { deps, lines } = makeDeps({ home: tempHome(), near: chain.near, fetch: chain.fetch });
+  await COMMANDS.submit({ as: PROVIDER, job: "0", file: FAIL_FILE, "deliver-anyway": true }, deps);
+  assert.deepEqual(chain.calls.map((c) => c.methodName), ["submit"]);
+  assert.match(lines.join("\n"), /the judge, run here, would fail this delivery .*; sending it anyway \(--deliver-anyway\)/);
 });

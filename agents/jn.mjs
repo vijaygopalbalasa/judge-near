@@ -20,8 +20,10 @@ const USAGE = `usage: node jn.mjs <command> [options]   (escrow from JN_ESCROW; 
   open          --as CLIENT --job N [--out file]
   status        --job N
   verify        --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER]
+  forget        --as PROVIDER --job N   (a settled sealed job) delete the key from OutLayer's vault
 
   --dry-run      print the exact call(s) and stop: no key is read, nothing is sent
+  --deliver-anyway  (submit, submit-sealed) send a delivery the judge, run here first, would fail
   --min-deposit  (ruling --dry-run) NEAR amount to show instead of get_judge's
 
   verify re-runs a ruling here with the browser verifier's code and prints each check. A sealed
@@ -59,6 +61,7 @@ try {
       "judge-hash": { type: "string" },
       "escrow-code-hash": { type: "string" },
       "min-deposit": { type: "string" },
+      "deliver-anyway": { type: "boolean" },
       tx: { type: "string" },
       signer: { type: "string" },
       help: { type: "boolean", short: "h" },
