@@ -14,8 +14,13 @@ workers, checks the delivery, and the escrow pays the worker or refunds the clie
 - **Anyone can check.** The page at
   [vijaygopalbalasa.github.io/judge-near/web](https://vijaygopalbalasa.github.io/judge-near/web/) downloads the exact
   wasm OutLayer ran, checks its SHA-256, runs it in your browser on the same input and compares the verdicts. A public
-  ruling re-runs in full; a sealed one is checked as far as anyone can go without its key, and the key holder re-runs
-  it in full.
+  ruling re-runs in full; a sealed one is checked as far as anyone can go without its key, and re-runs in full for the
+  key holder, or for anyone once its delivery is disclosed.
+
+<p align="center"><img src="docs/flow.svg" width="860" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></p>
+
+Step 5 is one callback: on a pass the worker is paid and the client gets the key together; on a fail the client is
+refunded and the key is never sent. Step 6 needs nobody's permission.
 
 This is the old "show me the work first" problem (you cannot prove work is good without giving it away), for agents
 that hire agents. The judge is a program, not a language model, on purpose: text inside a delivery cannot talk it out

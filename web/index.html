@@ -67,6 +67,9 @@
     p.hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
     .summary .explain { display: block; margin-top: 4px; font-weight: 400; font-size: 0.88rem; color: var(--muted); }
     a { color: var(--accent); }
+    figure.flow { margin: 0 0 20px; }
+    figure.flow img { display: block; width: 100%; height: auto; border-radius: 12px; }
+    figure.flow figcaption { color: var(--muted); font-size: 0.88rem; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -78,6 +81,11 @@
   <p class="lead">Below: the escrow's jobs, read live from NEAR testnet, and a Verify button for each ruling. Verify
     downloads the exact wasm OutLayer ran, checks its SHA-256, runs it here on the same input, and compares the verdict
     with the one on chain. Nothing is sent anywhere except read requests to NEAR RPC nodes and the wasm URL.</p>
+  <figure class="flow">
+    <a href="../docs/flow.svg" title="Open the diagram full size"><img src="../docs/flow.svg" width="960" height="500" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></a>
+    <figcaption>Step 5 is one callback: the worker is paid and the client gets the key together, or the client is
+      refunded and the key is never sent. Step 6 is this page.</figcaption>
+  </figure>
 
   <section>
     <h2>1. Jobs on <code id="escrow-name">judgenear-escrow.testnet</code></h2>

@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 500" width="960" height="500" role="img" aria-label="How a sealed job runs: the client funds the escrow with criteria; the worker stores the sealed delivery on the escrow and its key in OutLayer's secret store, readable only by the judge when the escrow calls; the escrow asks for a ruling; the judge, run by OutLayer in a TEE, decrypts, checks and scores; on a pass the escrow pays the worker and gives the client the key in one callback, on a fail it refunds the client; anyone re-runs the same wasm on the same input and gets the same verdict." font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1d1d1b"/>
+    </marker>
+    <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2457d6"/>
+    </marker>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="959" height="499" rx="14" fill="#ffffff" stroke="#e3e1da"/>
+
+  <!-- OutLayer TEE -->
+  <rect x="280" y="22" width="400" height="126" rx="12" fill="#f4f6fb" stroke="#8a94ad" stroke-dasharray="5 4"/>
+  <text x="294" y="42" font-size="11.5" fill="#5d5d58">OutLayer (off chain)</text>
+  <rect x="296" y="54" width="190" height="80" rx="8" fill="#ffffff" stroke="#1d1d1b"/>
+  <text x="391" y="78" font-size="13" font-weight="700" fill="#1d1d1b" text-anchor="middle">Judge (wasm 911b8a35)</text>
+  <text x="391" y="97" font-size="11" fill="#5d5d58" text-anchor="middle">runs in a TEE (Intel TDX):</text>
+  <text x="391" y="113" font-size="11" fill="#5d5d58" text-anchor="middle">decrypts C, checks dh, scores</text>
+  <rect x="516" y="54" width="148" height="80" rx="8" fill="#ffffff" stroke="#1d1d1b"/>
+  <text x="590" y="88" font-size="13" font-weight="700" fill="#1d1d1b" text-anchor="middle">Secret store</text>
+  <text x="590" y="107" font-size="11" fill="#5d5d58" text-anchor="middle">holds the key K</text>
+  <line x1="514" y1="94" x2="489" y2="94" stroke="#1d1d1b" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="501" y="87" font-size="11" fill="#1d1d1b" text-anchor="middle">K</text>
+
+  <!-- parties -->
+  <rect x="40" y="222" width="170" height="72" rx="10" fill="#ffffff" stroke="#1d1d1b" stroke-width="1.4"/>
+  <text x="125" y="252" font-size="13" font-weight="700" fill="#1d1d1b" text-anchor="middle">Client agent</text>
+  <text x="125" y="270" font-size="11" fill="#5d5d58" text-anchor="middle">pays, writes the checks</text>
+
+  <rect x="390" y="222" width="180" height="72" rx="10" fill="#ffffff" stroke="#1d1d1b" stroke-width="1.8"/>
+  <text x="480" y="249" font-size="13" font-weight="700" fill="#1d1d1b" text-anchor="middle">Escrow contract</text>
+  <text x="480" y="266" font-size="11" fill="#5d5d58" text-anchor="middle">NEAR testnet</text>
+  <text x="480" y="281" font-size="11" fill="#5d5d58" text-anchor="middle">holds payment, C and dh</text>
+
+  <rect x="750" y="222" width="170" height="72" rx="10" fill="#ffffff" stroke="#1d1d1b" stroke-width="1.4"/>
+  <text x="835" y="252" font-size="13" font-weight="700" fill="#1d1d1b" text-anchor="middle">Worker agent</text>
+  <text x="835" y="270" font-size="11" fill="#5d5d58" text-anchor="middle">does the work</text>
+
+  <!-- 1 and 2: in -->
+  <line x1="212" y1="242" x2="386" y2="242" stroke="#1d1d1b" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="299" y="234" font-size="12" fill="#1d1d1b" text-anchor="middle">1. criteria + payment</text>
+  <line x1="748" y1="242" x2="574" y2="242" stroke="#1d1d1b" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="661" y="234" font-size="12" fill="#1d1d1b" text-anchor="middle">2. sealed delivery C, dh</text>
+  <path d="M835,220 V94 H668" fill="none" stroke="#1d1d1b" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="694" y="46" font-size="12" fill="#1d1d1b">2. key K, encrypted:</text>
+  <text x="694" y="61" font-size="12" fill="#1d1d1b">read only by this judge,</text>
+  <text x="694" y="76" font-size="12" fill="#1d1d1b">only when the escrow asks</text>
+
+  <!-- 3 and 4: the ruling -->
+  <line x1="420" y1="220" x2="420" y2="138" stroke="#1d1d1b" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="412" y="178" font-size="12" fill="#1d1d1b" text-anchor="end">3. request_ruling</text>
+  <text x="412" y="193" font-size="11" fill="#5d5d58" text-anchor="end">(yield)</text>
+  <line x1="460" y1="136" x2="460" y2="218" stroke="#1d1d1b" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="470" y="170" font-size="12" fill="#1d1d1b">4. verdict, with k (the key</text>
+  <text x="470" y="185" font-size="12" fill="#1d1d1b">sealed to the client) on a pass</text>
+  <text x="470" y="200" font-size="11" fill="#5d5d58">(resume)</text>
+
+  <!-- 5: out, in one callback -->
+  <line x1="388" y1="276" x2="214" y2="276" stroke="#2457d6" stroke-width="2" marker-end="url(#ahb)"/>
+  <text x="299" y="295" font-size="12" fill="#2457d6" text-anchor="middle">5. pass: the key k</text>
+  <text x="299" y="310" font-size="12" fill="#2457d6" text-anchor="middle">fail: refund, key never sent</text>
+  <line x1="572" y1="276" x2="746" y2="276" stroke="#2457d6" stroke-width="2" marker-end="url(#ahb)"/>
+  <text x="661" y="295" font-size="12" fill="#2457d6" text-anchor="middle">5. pass: payment</text>
+
+  <!-- 6: anyone checks -->
+  <rect x="390" y="404" width="180" height="66" rx="10" fill="#ffffff" stroke="#1d1d1b" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <text x="480" y="432" font-size="13" font-weight="700" fill="#1d1d1b" text-anchor="middle">Verifier: anyone</text>
+  <text x="480" y="450" font-size="11" fill="#5d5d58" text-anchor="middle">page or command line</text>
+  <line x1="480" y1="402" x2="480" y2="298" stroke="#1d1d1b" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ah)"/>
+  <text x="492" y="342" font-size="12" fill="#1d1d1b">6. reads the ruling, downloads the same</text>
+  <text x="492" y="357" font-size="12" fill="#1d1d1b">wasm by SHA-256, re-runs it: same verdict</text>
+</svg>
