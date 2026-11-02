@@ -56,6 +56,18 @@ test("the fail run's proof: a field the skill cannot supply is left out, never i
   assert.deepEqual(verdict.checks.map((c) => [c.id.split("#")[0], c.ok]), [["schema", false], ["length", true]]);
 });
 
+test("with a nonce, the report carries it last, so its public hash cannot be guessed, and the judge still passes it", async () => {
+  const nonce = "ab".repeat(16);
+  const { text, missing } = deliverableFor(PASS_TASK, FACTS, { nonce });
+  assert.deepEqual(missing, []);
+  const report = JSON.parse(text);
+  assert.deepEqual(Object.keys(report), ["escrow", "job", "jobs", "completed", "refunded", "paid_to_workers", "read_at", "nonce"]);
+  assert.equal(report.nonce, nonce);
+  assert.equal((await judgeOn(PASS_TASK, text)).pass, true);
+  assert.throws(() => deliverableFor(PASS_TASK, FACTS, { nonce: "short" }), /nonce must be 32 lowercase hex/);
+  assert.throws(() => deliverableFor('{"checks":[{"kind":"schema","params":{"required":["nonce"]}}]}', { nonce: "x" }, { nonce }), /criteria require a field named nonce/);
+});
+
 test("a fact of the wrong type counts as missing; it is never sent as another type", () => {
   const { text, missing } = deliverableFor(PASS_TASK, { ...FACTS, jobs: "6", read_at: undefined });
   assert.deepEqual(missing, ["jobs", "read_at"]);
@@ -151,7 +163,7 @@ function jobView(extra) {
 }
 
 /** A stateful fake escrow and OutLayer: jobs advance as the agents call them; request_ruling runs the real judge with the K the fake keystore received. */
-function fakeChain(existing = []) {
+function fakeChain(existing = [], { dropSecrets = false } = {}) {
   const keystoreSecret = crypto.randomBytes(32);
   const jobs = existing.map((j) => ({ ...j }));
   const secrets = new Map();
@@ -174,7 +186,7 @@ function fakeChain(existing = []) {
       calls.push({ signer, contract: c.contractId, method: c.methodName, job: a.job_id });
       const ok = (value) => ({ txHash, outcome: { status: { SuccessValue: value === undefined ? "" : b64(JSON.stringify(value)) } } });
       if (c.contractId === "outlayer.testnet" && c.methodName === "store_secrets") {
-        secrets.set(a.profile, JSON.parse(eciesDecrypt(keystoreSecret, a.encrypted_secrets_base64)).JN_KEY);
+        if (!dropSecrets) secrets.set(a.profile, JSON.parse(eciesDecrypt(keystoreSecret, a.encrypted_secrets_base64)).JN_KEY);
         return ok();
       }
       assert.equal(c.contractId, ESCROW);
@@ -295,9 +307,10 @@ test("two agents, no human: the client posts and funds a sealed job, the worker 
   const report = JSON.parse(opened);
   assert.equal(report.job, id);
   assert.equal(report.jobs, OTHERS.length + 1);
+  assert.match(report.nonce, /^[0-9a-f]{32}$/, "every delivery carries a fresh nonce");
   assert.ok(client.lines.join("\n").includes(opened), "the client sees the report once it is opened");
   const workerText = worker.lines.join("\n");
-  assert.ok(!workerText.includes(opened) && !workerText.includes(report.read_at), "the worker never prints the sealed report");
+  assert.ok(!workerText.includes(opened) && !workerText.includes(report.read_at) && !workerText.includes(report.nonce), "the worker never prints the sealed report");
   assertNoSecretPrinted(worker.lines, [...worker.keys, ...client.keys], "worker");
   assertNoSecretPrinted(client.lines, [...worker.keys, ...client.keys], "client");
   assert.deepEqual(fs.readdirSync(tmpdir), [], "the worker removes its plaintext file");
@@ -426,4 +439,15 @@ test("the client shows control characters in an opened delivery as visible codes
   assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text), "no raw control character reaches the terminal");
   assert.ok(text.includes("report\\x1b[2J\\x1b]0;owned\\x07\\x0ddone"), text);
   assert.equal(fs.readFileSync(c.out, "utf8"), hostile);
+});
+
+test("a key_missing ruling is reported as what it is: no key reached the judge, no money moved, the job is back at Submitted", async () => {
+  const chain = fakeChain([jobView({ state: "Funded", criteria: PASS_TASK, client_pk: REAL_CLIENT_PK })], { dropSecrets: true });
+  const { deps, lines } = roleDeps("worker", { home: tempHome(), chain, clock: fakeClock(), tmpdir: tempDir("jn-agent-work-") });
+  const result = await runWorker({ as: WORKER, once: true }, deps);
+  assert.equal(result.verdict.err, "key_missing");
+  assert.equal(chain.jobs[0].state, "Submitted");
+  const text = lines.join("\n");
+  assert.match(text, /job 0: no key reached the judge \(key_missing\); no money moved and the job is back at Submitted/);
+  assert.doesNotMatch(text, /refunded/);
 });

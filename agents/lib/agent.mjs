@@ -70,12 +70,13 @@ async function workOn(job, jobs, { escrow, me, minYocto, deliverAnyway }, deps) 
   }
   let report;
   try {
-    report = deliverableFor(job.criteria, escrowFacts({ escrow, jobId: job.id, jobs, now: deps.now() }));
+    // A fresh 128-bit nonce in every report: the sealed delivery's dh is public, so it must not be guessable.
+    report = deliverableFor(job.criteria, escrowFacts({ escrow, jobId: job.id, jobs, now: deps.now() }), { nonce: deps.rng(16).toString("hex") });
   } catch (e) {
     say(deps, `job ${job.id}: skipped (${e.message}); nothing signed`);
     return { jobId: job.id, skipped: e.message };
   }
-  const fields = Object.keys(JSON.parse(report.text)).length;
+  const fields = Object.keys(JSON.parse(report.text)).filter((k) => k !== "nonce").length;
   const total = fields + report.missing.length;
   say(deps, `job ${job.id}: funded by ${job.client} with ${formatNear(job.amount)}; ${fields} of the ${total} fields its criteria require are ready`
     + (report.missing.length ? `; no fact for ${report.missing.join(", ")}, so it is left out` : ""));
@@ -104,6 +105,8 @@ async function workOn(job, jobs, { escrow, me, minYocto, deliverAnyway }, deps) 
   const v = ruling.verdict;
   if (ruling.pending || !v) {
     say(deps, `job ${job.id}: no verdict yet; ruling tx ${ruling.txHash}`);
+  } else if (v.err === "key_missing") {
+    say(deps, `job ${job.id}: no key reached the judge (key_missing); no money moved and the job is back at Submitted; ruling tx ${ruling.txHash}`);
   } else {
     say(deps, `job ${job.id}: the judge ${v.pass ? "passed" : "failed"} it (score ${v.score}); ${v.pass ? "the escrow pays the worker and releases the key to the client" : "the client is refunded and the delivery stays sealed"}; ruling tx ${ruling.txHash}`);
   }
@@ -198,8 +201,8 @@ export async function preview(opts, deps) {
   const escrow = escrowOf(deps);
   const criteria = readTask(opts.task);
   const jobs = await listJobs(escrow, deps);
-  const { text, missing } = deliverableFor(criteria, escrowFacts({ escrow, jobId: jobs.length, jobs, now: deps.now() }));
-  say(deps, `preview: ${jobs.length} jobs on ${escrow}; the report for job ${jobs.length} (reads only, signs nothing):`);
+  const { text, missing } = deliverableFor(criteria, escrowFacts({ escrow, jobId: jobs.length, jobs, now: deps.now() }), { nonce: deps.rng(16).toString("hex") });
+  say(deps, `preview: ${jobs.length} jobs on ${escrow}; the report for job ${jobs.length}, with a random nonce as the worker adds (reads only, signs nothing):`);
   if (missing.length) say(deps, `no fact for ${missing.join(", ")}, so it is left out`);
   say(deps, text);
   const verdict = await judgeHere(criteria, text);

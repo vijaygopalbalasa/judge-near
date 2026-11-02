@@ -8,8 +8,13 @@ import { formatNear } from "../../web/escrow.js";
 /** JavaScript's typeof, as the judge's schema check compares it: arrays and null are "object". */
 const typeOf = (value) => (value === null || Array.isArray(value) ? "object" : typeof value);
 
-/** The report for these criteria: {text, missing}, where missing lists the required fields with no fact of the named type. */
-export function deliverableFor(criteriaText, facts) {
+/**
+ * The report for these criteria: {text, missing}, where missing lists the required fields with no fact of the
+ * named type. With `nonce` (32 lowercase hex, 128 random bits), the report ends with it: a sealed delivery's dh is
+ * public, and without a nonce a report built from public facts could be found by guessing.
+ */
+export function deliverableFor(criteriaText, facts, { nonce } = {}) {
+  if (nonce !== undefined && !/^[0-9a-f]{32}$/.test(nonce)) throw new Error("the nonce must be 32 lowercase hex");
   let criteria;
   try {
     criteria = JSON.parse(criteriaText);
@@ -27,6 +32,7 @@ export function deliverableFor(criteriaText, facts) {
     if (s.params?.types && typeof s.params.types === "object") Object.assign(types, s.params.types);
   }
   if (required.length === 0) throw new Error("the schema check names no required fields");
+  if (nonce !== undefined && required.includes("nonce")) throw new Error("the criteria require a field named nonce, which this worker keeps for its own nonce");
   const report = {};
   const missing = [];
   for (const field of required) {
@@ -35,6 +41,7 @@ export function deliverableFor(criteriaText, facts) {
     if (value === undefined || (typeof want === "string" && typeOf(value) !== want)) missing.push(field);
     else report[field] = value;
   }
+  if (nonce !== undefined) report.nonce = nonce;
   return { text: JSON.stringify(report, null, 2), missing };
 }
 
