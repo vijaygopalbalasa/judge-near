@@ -81,6 +81,8 @@ published build.
 | `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed in 2 to 4 minutes; needs `rustup target add wasm32-unknown-unknown`; the first contract test run downloads the NEAR sandbox |
 | `cd agents && npm ci && npm test` | 67 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `python3 judge-wasm/scripts/mutate.py` | 56 of 56 planted bugs caught, one at a time (about 10 minutes) |
+| `python3 contract/scripts/mutate.py` | 78 of 78 planted bugs caught by the unit tests (about 30 minutes); the 79th, `#[private]` removed, is caught only by the sandbox suite and was checked by hand |
 
 **4. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 

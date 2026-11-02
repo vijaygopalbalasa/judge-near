@@ -5,6 +5,9 @@ then every file restored. CAUGHT means at least one test failed. The suite is
 green before and after the run. Rows marked `sealed` target the sealed-job path
 (docs/interface.md section 6.3).
 
+Reproduce: `python3 judge-wasm/scripts/mutate.py` (about 10 minutes; it writes
+`judge-wasm/target/mutation-log.md` and restores every file). Re-run on Nov 2 2026: 56 of 56 caught.
+
 | # | Planted bug | Location | Result | First failing test |
 |---|-------------|----------|--------|--------------------|
 | 1 | sha256 hex uppercased | src/lib.rs:66 | CAUGHT | tests::sha256_empty_is_the_known_vector |

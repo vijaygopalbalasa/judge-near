@@ -9,6 +9,10 @@ M79): it applies one exact edit, runs the suite, records the failing tests, and 
 M39 (`#[private]`) cannot be observed by a unit test and was planted by hand against the sandbox
 suite. Line numbers refer to the final `contract/src/lib.rs`.
 
+Reproduce: `python3 contract/scripts/mutate.py` (about 30 minutes; it writes
+`contract/target/mutation-results-all.json` and restores `src/lib.rs` after each bug). Re-run on Nov 2 2026
+against the deployed source: 78 of 78 caught, M39 aside.
+
 ## Sealed round (Nov 2): M52 to M79
 
 28 planted bugs on the sealed paths (interface.md section 6): client_pk validation and the
