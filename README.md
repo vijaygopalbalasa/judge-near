@@ -254,7 +254,7 @@ once against a fake escrow and OutLayer that run the real judge, including a wor
 would fail, a worker that declines a job paying less than its minimum, and a client that shows a hostile delivery's
 terminal control characters as visible codes.
 
-Jobs 5 to 8 in the table above were run this way on Nov 2 and 3 2026, each by two processes with no input after they
+Jobs 5 to 8 in the table above were run this way on Nov 2 2026, each by two processes with no input after they
 started (`node agent.mjs worker --as judgenear-worker.testnet --once` and `node agent.mjs client --as
 judgenear-client.testnet --provider judgenear-worker.testnet --task <task file>`). Jobs 6 and 8 used the second task.
 Jobs 5 and 6 came from the first version of the worker, which had no nonce and delivered what it had without checking
