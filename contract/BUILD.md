@@ -71,7 +71,7 @@ cargo check --lib --target wasm32-unknown-unknown
 # Unit tests (112)
 cargo test --lib
 
-# Sandbox integration tests (13, about 70 s). near-workspaces downloads the sandbox binary on
+# Sandbox integration tests (13, 2 to 4 minutes). near-workspaces downloads the sandbox binary on
 # first run; each test process compiles the two wasms once and reuses them.
 cargo test --test integration -- --test-threads=1
 ```

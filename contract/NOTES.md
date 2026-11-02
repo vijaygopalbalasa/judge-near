@@ -1,6 +1,6 @@
 # Judge on NEAR, escrow contract, build notes
 
-Working log so progress survives interruption. Kept in sync with src/lib.rs.
+Design and build notes for the escrow contract, kept in sync with src/lib.rs.
 
 ## What this is
 
@@ -8,9 +8,9 @@ A NEAR escrow (Rust, near-sdk 5.30) whose payout follows a deterministic verdict
 judge run inside OutLayer (TEE-attested WASI execution). The contract never scores anything itself:
 it stores the job, forwards criteria + deliverable to OutLayer, and acts on the verdict in a callback.
 
-Source of truth: `../docs/interface.md` (owned by the team lead; sections 4 and 5 are binding).
-OutLayer facts verified against a local clone of github.com/out-layer/outlayer (sparse checkout in the
-session scratchpad, commit matching docs/interface.md section 5, read Nov 1 2026).
+Source of truth: `../docs/interface.md` (sections 4 and 5 are binding). OutLayer facts were verified
+against a local clone of github.com/out-layer/outlayer (the commit docs/interface.md section 5 names,
+read Nov 1 2026).
 
 ## Verified OutLayer interface (from the clone, contract/src/lib.rs + execution.rs)
 
@@ -109,7 +109,7 @@ gated to sealed jobs):
   to 93 bytes starting with 0x01, decoded with near-sdk's re-exported base64); k is stored and put in
   ruling_applied in the same callback that pays the provider; without a valid k -> no money, back to
   Submitted, reason "invalid_k". Everything else is applied as written. Public jobs ignore k.
-- Judgment call 1 (beyond the brief): storing k in on_ruling grows the job by 128 bytes (u32 length
+- Design choice: storing k in on_ruling grows the job by 128 bytes (u32 length
   prefix + 124) with no attached deposit. If the contract had no spare balance, the callback would
   fail on storage staking and a passing provider would go unpaid. submit_sealed therefore charges
   the provider for those 128 bytes up front (about 0.0013 NEAR) and keeps them as stake.
@@ -130,7 +130,7 @@ gated to sealed jobs):
   base64 ciphertext). Only criteria that are not valid JSON could push it past 32 KiB, and the judge
   would answer invalid_criteria for those anyway.
 
-## Security review changes (Nov 1, from the team lead)
+## Security review changes (Nov 1)
 
 Finding: anyone could call request_ruling with a 1-yocto deposit. OutLayer then fails, the job flips
 Ruling -> Submitted, and a griefer (typically the client) could time this so no real ruling happens
@@ -145,7 +145,7 @@ without a ruling. Three layered fixes, each with its own tests and planted bugs:
    really runs the judge and a real verdict ends the job, so cheap failing requests stop being a
    stalling tool. Docs and tests use 0.01 NEAR (10000000000000000000000). For reference, on Nov 1
    outlayer.testnet estimate_execution_cost was 0.004001 NEAR for 10B instructions / 64 MB / 30 s
-   (team lead's measurement); OutLayer refunds unused deposit to the payer.
+   (measured that day); OutLayer refunds unused deposit to the payer.
 3. Only the job's client or provider may call request_ruling. Reasoning: each party has an incentive
    to ask (the provider to get paid, the client to get a refund on a failing delivery), so restricting
    the caller loses nothing; it removes third-party spam; and the expiry-plus-grace refund means money
@@ -158,8 +158,8 @@ more than the floor. Pick the floor with headroom at deploy time.
 
 ## Resource limits
 
-The contract sends max_instructions 50,000,000,000, max_memory_mb 64, max_execution_seconds 30 (the
-team lead's decision, also bound by docs/interface.md section 4).
+The contract sends max_instructions 50,000,000,000, max_memory_mb 64, max_execution_seconds 30 (bound
+by docs/interface.md section 4).
 
 Why so generous: the measured worst valid input is about 0.59B instructions, 1.75 MB and 21 ms
 (judge-wasm/RESOURCE-LIMITS.md, measured under OutLayer's exact metering), but a measured corpus is
@@ -171,11 +171,10 @@ Why it is nearly free: on testnet pricing the deposit estimate for 50B / 30 s is
 (base 0.001 + about 0.000005 for instructions + about 0.003 for time), under the 0.01 NEAR
 min_ruling_deposit, and OutLayer charges actual usage and refunds the rest to payer_account_id.
 
-judge-wasm's measured recommendation was 3B / 16 MB / 5 s; the team lead chose the wider margin on
-purpose. Each limit is a single constant in lib.rs, and the test that asserts the outgoing JSON pins
+judge-wasm's measured recommendation was 3B / 16 MB / 5 s; the wider margin is on purpose. Each limit is a single constant in lib.rs, and the test that asserts the outgoing JSON pins
 the literal values.
 
-## Deploy notes (deployment happens later, separately; nothing is deployed from here)
+## Deploy notes (deployed Nov 2 2026 with tools/deploy-escrow.mjs; see the README)
 
 Init arguments for `new`, testnet:
 
@@ -230,17 +229,17 @@ job_created (with sealed), job_funded, deliverable_submitted, ruling_requested, 
 score, eh, k: the sealed key on a sealed pass, null otherwise), ruling_rejected (reason, including
 key_missing and invalid_k), refunded, completed.
 
-## Deviations from the original brief
+## Design decisions
 
-1. create_job and submit are #[payable]: the brief required honest storage handling via an attached
-   deposit, and a non-payable method rejects deposits.
-2. provider != client enforced (the brief left the choice to us).
+1. create_job and submit are #[payable]: honest storage handling needs an attached deposit, and a
+   non-payable method rejects deposits.
+2. provider != client is enforced.
 3. ft_on_transfer (NEP-141) deferred; v1 is NEAR-only.
 4. new() takes a fifth parameter, min_ruling_deposit, and request_ruling is restricted to the parties
-   (both per the team lead's security review, Nov 1).
+   (both from the security review, Nov 1).
 5. on_ruling reads promise_result_checked (promise_result is deprecated in near-sdk 5.30); a result
    over 1 KiB is a clean rejection.
-6. Sealed mode, beyond the brief: submit_sealed charges the provider for the 128 bytes k will take
+6. Sealed mode: submit_sealed charges the provider for the 128 bytes k will take
    when a pass stores it (the callback cannot take a deposit; without the reserve a contract with no
    spare balance would fail the callback on storage staking and leave a passing provider unpaid).
    A test pins the constant to the measured growth.
@@ -295,7 +294,7 @@ reason (behavioral RED), then the rules (GREEN).
 - min_ruling_deposit is immutable (see residual risk above).
 - A deposit from a failed request_execution call stays in the contract (see Deposits).
 - ft_on_transfer not implemented.
-The team lead accepted these for v1 (Nov 1).
+Accepted for v1 (Nov 1).
 
 Sealed mode doubts (Nov 2):
 - The real OutLayer path for sealed jobs (secrets fetched by the worker, key_missing when the
@@ -309,7 +308,7 @@ Sealed mode doubts (Nov 2):
   gas out of the 40 TGas GAS_ON_RULING reserve. The unit VM does not meter wasm instructions, so
   this is a lower bound, but the headroom is wide.
 
-## Final state (Nov 2 2026, sealed mode, not committed)
+## Final state (Nov 2 2026, sealed mode)
 
 - Unit tests: 112 pass (71 from v1 + 41 sealed). Sandbox integration tests: 13 pass (7 + 6 sealed).
   0 ignored, no warnings.
@@ -320,4 +319,5 @@ Sealed mode doubts (Nov 2):
 - Mock wasm (tests only): 128780 bytes, sha256
   ca35736327808bb005c29368d4886c5a0ccd935926527ebf28dc9931db93e649.
 - Public-only v1 (committed as 9c432bf): 179461 bytes, sha256 a0130b87...
-- Not deployed, not committed.
+- Deployed on testnet as `judgenear-escrow.testnet` on Nov 2 2026 (README, "The escrow on testnet"),
+  where NEAR reports the code hash above.

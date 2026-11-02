@@ -1,4 +1,4 @@
-# Interface: judge program <-> escrow contract <-> verifier (v1)
+# Interface: judge program <-> escrow contract <-> verifier (judge v2: public and sealed jobs; verdict format v1)
 
 This file is the contract between the three parts of Judge on NEAR. If code disagrees with it, the code is wrong
 or this file must be changed first.

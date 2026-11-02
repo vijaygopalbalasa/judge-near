@@ -27,7 +27,7 @@ equivalent mutant that no test can catch. Removing both is the same bug as M70.
 
 ## Security round (Nov 1 to 2)
 
-The three planted bugs requested by the team lead, one per anti-griefing fix: **M40** (a Submitted
+The three planted bugs for the anti-griefing fixes, one per fix: **M40** (a Submitted
 job refundable at plain expires_at), **M21** (the minimum ruling deposit check removed; M41 is its
 boundary) and **M42** (a third party allowed to request a ruling; M43 and M44 wrongly exclude a party).
 M45 to M51 cover init validation, the stored floor, the view and the resource limits.

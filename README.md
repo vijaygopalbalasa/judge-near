@@ -7,8 +7,9 @@ and the escrow pays the worker or refunds the client from the verdict. Anyone ca
 
 In **sealed mode** the delivery stays encrypted until it passes. The worker's key is locked in OutLayer's vault so
 that only this exact judge build, called through this escrow, can read it. On a pass the worker is paid and the
-client receives the key in the same step; a failing delivery is never revealed. This is the old "show me the work
-first" problem (you cannot prove work is good without giving it away), solved for agents that hire agents.
+client receives the key in the same step; on a fail the client is refunded and the key is never released. This is
+the old "show me the work first" problem (you cannot prove work is good without giving it away), for agents that hire
+agents.
 
 Built at NEAR HACKATHON (Nov 1 to 14, 2026), work in progress. Tracks: Privacy & Private AI, Agent Economy,
 AI Security & Defense.
@@ -18,7 +19,7 @@ AI Security & Defense.
 | Part | State |
 |---|---|
 | Judge (Rust, `wasm32-wasip1`) | Done, v2 (public and sealed jobs): 305 parity vectors against the original engine plus 42 sealed vectors, fuel-bounded, reproducible build |
-| Judge running on OutLayer testnet | Done: v1 called directly ([tx 4VFvzo...](https://testnet.nearblocks.io/txns/4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk)) and v2 called by the escrow for six rulings ([below](#the-escrow-on-testnet)); every verdict identical to a local run |
+| Judge running on OutLayer testnet | Done: v1 called directly ([tx 4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for eight rulings ([below](#the-escrow-on-testnet)); every public verdict identical to a local run, every sealed one consistent without the key and identical with it |
 | OutLayer vault rules for sealed keys | Verified on testnet with `tools/keystore-probe` (transactions below) |
 | Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Done: re-runs public rulings, sealed rulings with the delivery key, and key_missing rulings without one; the page lists the escrow's jobs live with a Verify button per ruling, and a sealed ruling without its key still gets the checks that need none |
 | Escrow contract (near-sdk 5), public and sealed jobs | Done: 112 unit tests, 13 tests in the NEAR sandbox, 79 of 79 planted bugs caught; deployed on testnet as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
@@ -37,8 +38,10 @@ node jn.mjs verify --tx G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1 --signer ju
 It reads the testnet transaction in which the escrow asked OutLayer for a ruling, downloads the exact wasm OutLayer
 ran, checks its SHA-256 against the hash OutLayer was told to run and against the published build, re-runs it on the
 same input and compares the verdicts. Expected: ten `ok` lines and "Verified: judge v2 (public and sealed jobs),
-commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Any ruling in
-[the table below](#the-escrow-on-testnet) works the same way. The transaction is read from a NEAR archival node
+commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Job 1 and job 4's first ruling
+(`key_missing`) in [the table below](#the-escrow-on-testnet) verify the same way. A sealed ruling cannot be re-run
+without its delivery key: it prints the checks that need no key and ends with "not re-run" (exit status 1). The
+transaction is read from a NEAR archival node
 (FastNEAR's, then NEAR's own), because regular testnet nodes drop transactions after about 30 hours; set
 `JN_ARCHIVAL_RPC` to use another.
 
@@ -49,21 +52,24 @@ GitHub Pages), or serve it yourself from the repository root:
 python3 -m http.server 8080
 ```
 
-and open http://localhost:8080/web/. Panel 1 reads the escrow live from testnet. Expected: two green checks ("Runs the
-published escrow build", code hash `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`, and "Its judge is judge v2 (public
-and sealed jobs), commit fd3dcc6"), "7 jobs, read at block" with the block number, and one card per job with its
-state, amount, parties and outcome. Press **Verify** on job 0's ruling: the page reads the transaction from the same
+and open http://localhost:8080/web/. Panel 1 reads the escrow live from testnet. Expected: "Runs the published escrow
+build" (code hash `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`) and "Its judge is judge v2 (public and sealed jobs),
+commit fd3dcc6" in green; a line on the escrow's full-access key, amber while the account still has its deploy key
+(see [the limits](#security-model-and-honest-limits)) and green once it has none; "7 jobs, read at block" with the
+block number; and one card per job with its state, amount, parties and outcome. Press **Verify** on job 0's ruling: the page reads the transaction from the same
 archival nodes, checks that it asked for job 0 of this escrow, downloads the exact wasm OutLayer ran, checks its
 SHA-256 against the hash OutLayer was told to run and against the published build, runs it in your browser on the
 same input, and compares the verdicts. Expected: eleven green checks and "Verified: judge v2 (public and sealed jobs),
-commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Job 1 and the first ruling of job 4
-(`key_missing`, re-run without a key) verify the same way. Re-running a sealed score needs the delivery key, which
+commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Job 1 verifies the same way, and so does job
+4's first ruling (`key_missing`), with a twelfth check saying it is re-run without a key. Re-running a sealed score needs the delivery key, which
 only the worker and, after a pass, the client hold, so the other sealed rulings (jobs 2, 3, 5 and 6, and job 4's
 second) show nine green checks (the verdict's `ch`, `dh` and `eh` among them), a circle on the re-run, and "Consistent, not
 re-run". Panel 2
 re-runs any ruling transaction; its default, the judge v1 run of Nov 1, gives ten green checks and "Verified: judge
-v1 (public jobs), commit e09c6f9 computes exactly this ruling (pass: true, score: 100)." Panel 3 runs the judge on
-criteria and a deliverable you type.
+v1 (public jobs), commit e09c6f9 computes exactly this ruling (pass: true, score: 100)." A link of the form
+`web/?tx=<hash>&signer=<account>` opens the page with that ruling checked in panel 2; every ruling link in this README
+is one. Panel 3 runs the judge on criteria and a deliverable you type, after checking that the judge file is a
+published build.
 
 **3. Run the tests.**
 
@@ -73,7 +79,7 @@ criteria and a deliverable you type.
 | `node --test web/test/*.test.mjs` | 39 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
-| `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
+| `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed in 2 to 4 minutes; needs `rustup target add wasm32-unknown-unknown`; the first contract test run downloads the NEAR sandbox |
 | `cd agents && npm ci && npm test` | 67 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 
 **4. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
@@ -143,12 +149,17 @@ The full contract between the parts is in [`docs/interface.md`](docs/interface.m
 
 ## Evidence on testnet
 
+Each transaction link opens the project page, which reads the transaction from NEAR archival nodes: a ruling opens
+in the verifier, anything else in `web/tx.html`. (The public testnet explorer, testnet.nearblocks.io, has not indexed
+testnet since Sep 27 2026.) To read one without the page:
+`curl -s https://archival-rpc.testnet.fastnear.com -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tx","params":{"tx_hash":"<hash>","sender_account_id":"<signer>","wait_until":"FINAL"}}'`.
+
 | What | Transaction |
 |---|---|
-| The judge ran on OutLayer and returned the same verdict as a local run (121,432 instructions, 0.0011 NEAR) | [4VFvzo...](https://testnet.nearblocks.io/txns/4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk) |
-| A secret bound to probe build A was handed to build A | [CrA7ML...](https://testnet.nearblocks.io/txns/CrA7MLCcJGwg9ytof41tJESpREJpWDsyRtXLefbJFahg) |
-| The same secret was not handed to build B (different hash) | [DpJTH9...](https://testnet.nearblocks.io/txns/DpJTH9HBM3ovqQhutGvEcReVd4iHub8wUgLAHFpBmEiT) |
-| A caller rule that does not name the caller was refused ("Access denied by access condition") | [5b7BnF...](https://testnet.nearblocks.io/txns/5b7BnFoMBK5MFx1LXMqE7bNgAYwiQRC1xEwpJmX3Prfh) |
+| The judge ran on OutLayer and returned the same verdict as a local run (121,432 instructions, 0.0011 NEAR) | [4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet) |
+| A secret bound to probe build A was handed to build A | [CrA7ML...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=CrA7MLCcJGwg9ytof41tJESpREJpWDsyRtXLefbJFahg&signer=judgeprotocol.testnet) |
+| The same secret was not handed to build B (different hash) | [DpJTH9...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=DpJTH9HBM3ovqQhutGvEcReVd4iHub8wUgLAHFpBmEiT&signer=judgeprotocol.testnet) |
+| A caller rule that does not name the caller was refused ("Access denied by access condition") | [5b7BnF...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=5b7BnFoMBK5MFx1LXMqE7bNgAYwiQRC1xEwpJmX3Prfh&signer=judgeprotocol.testnet) |
 
 One limit of these probe runs: they were signed and called by the same account, so they cannot tell the
 `Predecessor` rule apart from a plain whitelist. Job 3 below settles the positive case: the client signed that sealed
@@ -160,7 +171,7 @@ that always lets the owner in would explain them too. A different contract being
 ### The escrow on testnet
 
 `judgenear-escrow.testnet` was deployed and initialised in one transaction,
-[FfrcKX...](https://testnet.nearblocks.io/txns/FfrcKXWFetEq4pUt7WvoztNFQ1jsQusb2bP1rpdWoYva), with
+[FfrcKX...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FfrcKXWFetEq4pUt7WvoztNFQ1jsQusb2bP1rpdWoYva&signer=judgenear-escrow.testnet), with
 `tools/deploy-escrow.mjs`. NEAR reports its code hash as `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`, the build
 in `contract/BUILD.md`, and its `get_judge` names judge v2 (URL pinned to commit fd3dcc6, SHA-256 `911b8a35...`).
 The account still has its deploy key; see the limits below. Each job below was run between `judgenear-client.testnet`
@@ -169,14 +180,14 @@ and 6 by the two agents ([below](#two-agents-no-human)).
 
 | Job | What happened | Ruling |
 |---|---|---|
-| 0, public | Both checks passed (score 100); the escrow paid the worker | [G5zVDo...](https://testnet.nearblocks.io/txns/G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1) |
-| 1, public | The delivery never names NEAR or USDC (score 50); the client was refunded | [GgZvjQ...](https://testnet.nearblocks.io/txns/GgZvjQg35vQfMsdRovKP6ze3faQyutKFkBDDzLm7JfCT) |
-| 2, sealed | The judge read the worker's key from the vault, decrypted the delivery, passed it and released the key sealed to the client; the worker was paid, and `open` gave the client the exact delivery | [5nC2AB...](https://testnet.nearblocks.io/txns/5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh) |
-| 3, sealed | Score 50; the client was refunded and the key was never released | [3sCPet...](https://testnet.nearblocks.io/txns/3sCPetXoYFwuoyStnKmjZHiLnh1rBQW9nKNyGvyfCAib) |
-| 4, sealed | The worker's key was never stored (a test harness skipped that step, which the tool always does first); the judge answered `key_missing`, no money moved, and the job went back to Submitted | [J5hX6n...](https://testnet.nearblocks.io/txns/J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3) |
-| 4, again | `submit-sealed` stored the saved key again ([7BiGSn...](https://testnet.nearblocks.io/txns/7BiGSnZZWcFHY4nH2RB4cgs1fzAsYo6ifNCah4a4vnXs)); the second ruling passed, paid the worker and released the key | [5G6jQj...](https://testnet.nearblocks.io/txns/5G6jQja3xjvw6tnzkmpE3P86Sracs5PFStJJP38o4a2J) |
-| 5, sealed | Two agents: the worker filled all seven fields the client required (score 100); the worker was paid and the client opened the report | [5E4FiC...](https://testnet.nearblocks.io/txns/5E4FiCfc1CQ7ywUeEDZ9jVMpkronjaCH4oNWWqM8hN71) |
-| 6, sealed | Two agents: the client also required `mainnet_tvl_usd`, which the worker had no fact for (score 50); the client was refunded and the key was never released | [7rjHmF...](https://testnet.nearblocks.io/txns/7rjHmFL8w9keTZVf1ybXVawxGTQibVdpkJxEWa2xCn7r) |
+| 0, public | Both checks passed (score 100); the escrow paid the worker | [G5zVDo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1&signer=judgenear-worker.testnet) |
+| 1, public | The delivery never names NEAR or USDC (score 50); the client was refunded | [GgZvjQ...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=GgZvjQg35vQfMsdRovKP6ze3faQyutKFkBDDzLm7JfCT&signer=judgenear-client.testnet) |
+| 2, sealed | The judge read the worker's key from the vault, decrypted the delivery, passed it and released the key sealed to the client; the worker was paid, and `open` gave the client the exact delivery | [5nC2AB...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=5nC2ABEDbFKFzVY8nzVaJooyD3uW2xxpbH2VuvgcYNsh&signer=judgenear-worker.testnet) |
+| 3, sealed | Score 50; the client was refunded and the key was never released | [3sCPet...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=3sCPetXoYFwuoyStnKmjZHiLnh1rBQW9nKNyGvyfCAib&signer=judgenear-client.testnet) |
+| 4, sealed | The worker's key was never stored (a test harness skipped that step, which the tool always does first); the judge answered `key_missing`, no money moved, and the job went back to Submitted | [J5hX6n...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3&signer=judgenear-worker.testnet) |
+| 4, again | `submit-sealed` stored the saved key again ([7BiGSn...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=7BiGSnZZWcFHY4nH2RB4cgs1fzAsYo6ifNCah4a4vnXs&signer=judgenear-worker.testnet)); the second ruling passed, paid the worker and released the key | [5G6jQj...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=5G6jQja3xjvw6tnzkmpE3P86Sracs5PFStJJP38o4a2J&signer=judgenear-worker.testnet) |
+| 5, sealed | Two agents: the worker filled all seven fields the client required (score 100); the worker was paid and the client opened the report | [5E4FiC...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=5E4FiCfc1CQ7ywUeEDZ9jVMpkronjaCH4oNWWqM8hN71&signer=judgenear-worker.testnet) |
+| 6, sealed | Two agents: the client also required `mainnet_tvl_usd`, which the worker had no fact for (score 50); the client was refunded and the key was never released | [7rjHmF...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=7rjHmFL8w9keTZVf1ybXVawxGTQibVdpkJxEWa2xCn7r&signer=judgenear-worker.testnet) |
 
 Every ruling above verifies with `node jn.mjs verify --tx <ruling> --signer <who signed it>`: the public ones as they
 are, the key_missing one without a key, and the sealed ones with `--as` the client (once the key is released) or the
@@ -245,7 +256,7 @@ only with `--deliver-anyway`, the way to show a failing delivery.
 | `judge-wasm/release/judge.wasm` | The exact file OutLayer downloads, with its SHA-256 |
 | `contract/` | The escrow contract and a mock OutLayer for sandbox tests |
 | `agents/` | The command line tool a client and a worker use to run a job on testnet (`jn.mjs`), and the two agents (`agent.mjs`) |
-| `web/` | The page: the escrow's jobs, read live, and the browser verifier, with their tests |
+| `web/` | The page: the escrow's jobs, read live, the browser verifier, a transaction viewer (`tx.html`), and their tests |
 | `tools/keystore-probe/` | The probe used to check OutLayer's vault rules on testnet |
 | `tools/deploy-escrow.mjs` | Deploys the published escrow build to a testnet account and initialises it, in one transaction |
 | `docs/interface.md` | Input, verdict, hashes, contract rules and sealed mode, in one place |

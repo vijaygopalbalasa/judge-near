@@ -57,8 +57,8 @@ const GAS_ON_RULING: Gas = Gas::from_tgas(40);
 /// plus the request_ruling body, and still leaves unused gas for OutLayer via the weight above.
 const MIN_PREPAID_GAS: Gas = Gas::from_tgas(170);
 
-/// Resource limits sent to OutLayer: 50 billion instructions, 64 MB, 30 seconds (the team lead's
-/// decision, also bound by docs/interface.md section 4).
+/// Resource limits sent to OutLayer: 50 billion instructions, 64 MB, 30 seconds (bound by
+/// docs/interface.md section 4).
 ///
 /// The judge's measured worst valid input (criteria 4096 B, deliverable 16384 B, 16 checks, under
 /// OutLayer's own metering) is about 0.59B instructions, 1.75 MB and 21 ms. But a measured corpus is
