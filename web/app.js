@@ -1,6 +1,6 @@
 // Page wiring for web/index.html. All checking logic lives in verify.js; reading the escrow in escrow.js.
-import { ESCROW, RULINGS, formatNear, jobOutcome, readEscrow } from "./escrow.js";
-import { PUBLISHED_JUDGES, reportOutcome, verifyTransaction } from "./verify.js";
+import { ESCROW, RULINGS, formatNear, jobOutcome, parseDeepLink, readEscrow } from "./escrow.js";
+import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
 const RUN_LIMIT_MS = 10_000;
@@ -81,11 +81,11 @@ async function runCheck(button, summary, list, check) {
 }
 
 const short = (text, n = 6) => (text.length > n + 1 ? `${text.slice(0, n)}…` : text);
-const txLink = (tx) => {
+/** The transaction page (tx.html) reads any transaction from NEAR archival nodes; testnet explorers lag. */
+const txLink = (tx, signer) => {
   const a = el("a", "", short(tx));
-  a.href = `https://testnet.nearblocks.io/txns/${tx}`;
-  a.target = "_blank";
-  a.rel = "noopener";
+  a.href = `tx.html?tx=${encodeURIComponent(tx)}&signer=${encodeURIComponent(signer)}`;
+  a.title = tx;
   return a;
 };
 
@@ -101,7 +101,7 @@ function rulingRow(r) {
   const box = el("div", "ruling");
   const head = el("div", "ruling-head");
   const what = el("span");
-  what.append("Ruling ", txLink(r.tx), `, signed by ${r.signer}`);
+  what.append("Ruling ", txLink(r.tx, r.signer), `, signed by ${r.signer}`);
   const button = el("button", "", "Verify");
   button.type = "button";
   head.append(what, button);
@@ -155,6 +155,9 @@ async function loadJobs() {
       PUBLISHED_JUDGES.has(escrow.judge.hash)
         ? markItem("ok", `Its judge is ${PUBLISHED_JUDGES.get(escrow.judge.hash)}`, `sha256 ${escrow.judge.hash}`)
         : markItem("bad", "Its judge is not a published Judge on NEAR build", `sha256 ${escrow.judge.hash}`),
+      escrow.fullAccessKeys === 0
+        ? markItem("ok", "No full-access key: nobody can replace its code", "the account has no key that can deploy")
+        : markItem("skip", `Still has ${escrow.fullAccessKeys === 1 ? "a full-access key" : `${escrow.fullAccessKeys} full-access keys`}: its owner could replace the code`, "see the README, \"Security model and honest limits\""),
     );
     status.className = "summary";
     status.textContent = `${escrow.jobs.length} jobs, read at block ${escrow.blockHeight}.`;
@@ -174,6 +177,7 @@ $("tx-form").addEventListener("submit", (e) => {
 });
 
 let judgeBytes;
+let judgeName;
 $("run-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const button = $("run-go");
@@ -184,7 +188,10 @@ $("run-form").addEventListener("submit", async (e) => {
     if (!judgeBytes) {
       const res = await fetch("../judge-wasm/release/judge.wasm");
       if (!res.ok) throw new Error(`could not load the judge (HTTP ${res.status}); serve the repository root`);
-      judgeBytes = new Uint8Array(await res.arrayBuffer());
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      judgeName = await publishedJudgeName(bytes);
+      if (!judgeName) throw new Error(`the judge file served here (sha256 ${await sha256Hex(bytes)}) is not a published build; not running it`);
+      judgeBytes = bytes;
     }
     const input = JSON.stringify({ criteria: $("criteria").value, deliverable: $("deliverable").value });
     const text = await runInWorker(judgeBytes, input);
@@ -192,7 +199,7 @@ $("run-form").addEventListener("submit", async (e) => {
     summary.className = `summary ${verdict.pass ? "ok" : "bad"}`;
     summary.textContent = verdict.err
       ? `Not judged: ${verdict.err}`
-      : `${verdict.pass ? "Pass" : "Fail"}: score ${verdict.score} of 100 (threshold ${verdict.th}).`;
+      : `${verdict.pass ? "Pass" : "Fail"}: score ${verdict.score} of 100 (threshold ${verdict.th}), by ${judgeName}.`;
     out.hidden = false;
     out.textContent = text;
   } catch (err) {
@@ -204,3 +211,12 @@ $("run-form").addEventListener("submit", async (e) => {
 });
 
 loadJobs();
+
+// A link to one ruling, ?tx=<hash>&signer=<account>, opens the page with it checked in panel 2.
+const link = parseDeepLink(location.search);
+if (link) {
+  $("tx").value = link.tx;
+  $("signer").value = link.signer;
+  $("tx-form").scrollIntoView();
+  $("tx-form").requestSubmit();
+}

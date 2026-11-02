@@ -215,6 +215,59 @@ export async function inputFromEscrow(tx, ruling, { rpc = TESTNET_ARCHIVAL_RPCS,
   return { input, jobId, escrow: ruling.caller };
 }
 
+/** The published build these bytes are (PUBLISHED_JUDGES), by SHA-256, or null. */
+export async function publishedJudgeName(bytes) {
+  return PUBLISHED_JUDGES.get(await sha256Hex(bytes)) ?? null;
+}
+
+/**
+ * A transaction in plain terms, for the transaction page: who signed it, what it called, how it ended,
+ * and each receipt's executor, status, plain logs, events and returned value.
+ */
+export function summarizeTx(tx) {
+  const t = tx?.transaction ?? {};
+  const actions = (t.actions ?? []).map((a) => {
+    if (typeof a === "string") return { kind: a };
+    const [kind, body = {}] = Object.entries(a ?? {})[0] ?? ["Unknown"];
+    if (kind === "FunctionCall") {
+      let args;
+      try {
+        args = new TextDecoder().decode(decodeBase64(body.args ?? ""));
+      } catch {
+        args = undefined;
+      }
+      return { kind, method: body.method_name, deposit: String(body.deposit ?? "0"), args };
+    }
+    if (kind === "Transfer") return { kind, deposit: String(body.deposit ?? "0") };
+    return { kind };
+  });
+  const status = tx?.status ?? {};
+  const failed = typeof status === "object" && status !== null && "Failure" in status;
+  const receipts = (tx?.receipts_outcome ?? []).map((r) => {
+    const o = r?.outcome ?? {};
+    const s = o.status ?? {};
+    const logs = Array.isArray(o.logs) ? o.logs : [];
+    let returned;
+    if (typeof s.SuccessValue === "string" && s.SuccessValue) {
+      try {
+        returned = new TextDecoder().decode(decodeBase64(s.SuccessValue));
+      } catch {
+        returned = undefined;
+      }
+    }
+    return {
+      id: r?.id,
+      executor: o.executor_id,
+      status: "Failure" in s ? "failure" : "SuccessValue" in s || "SuccessReceiptId" in s ? "success" : "unknown",
+      failure: "Failure" in s ? JSON.stringify(s.Failure) : undefined,
+      logs: logs.filter((l) => typeof l === "string" && !l.startsWith("EVENT_JSON:")),
+      events: events(logs).map((e) => ({ standard: e.standard, event: e.event, data: e.data })),
+      returned,
+    };
+  });
+  return { hash: t.hash, signer: t.signer_id, receiver: t.receiver_id, actions, status: failed ? "failure" : "success", failure: failed ? JSON.stringify(status.Failure) : undefined, receipts };
+}
+
 /** Run the judge bytes on one input; returns the verdict text it prints. */
 export async function runJudge(wasmBytes, input, env = {}) {
   const module = await WebAssembly.compile(wasmBytes);
@@ -338,3 +391,4 @@ export async function verifyTransaction(txHash, signer, options = {}) {
   const report = await verifyRuling(ruling, { ...options, signer, tx });
   return { ...report, ruling };
 }
+

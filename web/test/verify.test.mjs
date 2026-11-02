@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, reportOutcome, rulingJob, runJudge, sha256Hex, verifyRuling, verifyTransaction } from "../verify.js";
+import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -440,4 +440,26 @@ test("verifyTransaction, as the page calls it, reads the ruling from the archiva
   const report = await verifyTransaction(RULING_TX, "judgeprotocol.testnet", { fetchImpl, wasmBytes: judgeV1 });
   assert.equal(report.ok, true, JSON.stringify(report.steps.filter((s) => !s.ok)));
   assert.deepEqual(asked.map((a) => a.url), ARCHIVAL);
+});
+
+test("publishedJudgeName names a published judge build by its bytes, and nothing else", async () => {
+  assert.equal(await publishedJudgeName(judge), "judge v2 (public and sealed jobs), commit fd3dcc6");
+  assert.equal(await publishedJudgeName(judgeV1), "judge v1 (public jobs), commit e09c6f9");
+  assert.equal(await publishedJudgeName(probe), null);
+});
+
+test("summarizeTx reads who signed what, the outcome, and each receipt's executor, status and events", () => {
+  const sum = summarizeTx(tx);
+  assert.equal(sum.signer, "judgeprotocol.testnet");
+  assert.equal(sum.receiver, "outlayer.testnet");
+  assert.equal(sum.status, "success");
+  assert.deepEqual(sum.actions.map((a) => [a.kind, a.method]), [["FunctionCall", "request_execution"]]);
+  assert.match(sum.actions[0].deposit, /^\d+$/);
+  assert.equal(JSON.parse(sum.actions[0].args).source.WasmUrl.hash, "da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1", "a call's JSON arguments are decoded");
+  const outlayer = sum.receipts.filter((r) => r.executor === "outlayer.testnet");
+  assert.ok(outlayer.length >= 1);
+  assert.ok(sum.receipts.flatMap((r) => r.events.map((e) => e.event)).includes("execution_requested"));
+  const failed = summarizeTx({ ...tx, status: { Failure: { ActionError: { kind: { FunctionCallError: { ExecutionError: "Smart contract panicked: no" } } } } } });
+  assert.equal(failed.status, "failure");
+  assert.match(failed.failure, /Smart contract panicked: no/);
 });

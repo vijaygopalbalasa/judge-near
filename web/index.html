@@ -62,13 +62,17 @@
     .ruling-head button { margin-top: 0; padding: 8px 16px; }
     .ruling .summary { margin-top: 10px; font-size: 0.92rem; }
     footer { color: var(--muted); font-size: 0.88rem; }
+    p.hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
     a { color: var(--accent); }
   </style>
 </head>
 <body>
 <main>
   <h1>Judge on NEAR</h1>
-  <p class="lead">The jobs on the testnet escrow, read live from NEAR, and a Verify button for each ruling. Verify
+  <p class="lead">A client locks payment in the escrow and writes the rules a delivery must meet. A judge, run by
+    OutLayer in a TEE, checks the delivery, and the escrow pays the worker or refunds the client. In sealed jobs the
+    delivery stays encrypted, and on a pass the key goes to the client in the same step as the payment.</p>
+  <p class="lead">Below: the escrow's jobs, read live from NEAR testnet, and a Verify button for each ruling. Verify
     downloads the exact wasm OutLayer ran, checks its SHA-256, runs it here on the same input, and compares the verdict
     with the one on chain. Nothing is sent anywhere except read requests to NEAR RPC nodes and the wasm URL.</p>
 
@@ -82,6 +86,8 @@
   <section>
     <h2>2. Re-run any ruling from its transaction</h2>
     <form id="tx-form">
+      <p class="hint">Any ruling transaction works. The default is the first run of the judge on OutLayer (judge v1,
+        Nov 1 2026), called directly by judgeprotocol.testnet before the escrow existed.</p>
       <label for="tx">Transaction hash</label>
       <input id="tx" required value="4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk" autocomplete="off" spellcheck="false">
       <label for="signer">Account that signed it</label>

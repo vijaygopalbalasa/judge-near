@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ESCROW, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, formatNear, jobOutcome, readEscrow } from "../escrow.js";
+import { ESCROW, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, formatNear, jobOutcome, parseDeepLink, readEscrow } from "../escrow.js";
 import { TESTNET_ARCHIVAL_RPCS } from "../verify.js";
 import * as agentsConfig from "../../agents/lib/config.mjs";
 
@@ -16,10 +16,14 @@ test("the ruling list is the README's escrow table, row for row, with the signer
   const rows = section.split("\n").filter((line) => /^\| \d/.test(line));
   const fromReadme = rows.map((row) => {
     const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
-    return { job: Number.parseInt(cells[0], 10), tx: /txns\/([1-9A-HJ-NP-Za-km-z]{43,44})\)/.exec(cells.at(-1))[1] };
+    // Each ruling links to the hosted page, which re-runs it: web/?tx=<hash>&signer=<account>.
+    const m = /\(https:\/\/vijaygopalbalasa\.github\.io\/judge-near\/web\/\?tx=([1-9A-HJ-NP-Za-km-z]{43,44})&signer=([a-z0-9._-]+)\)/.exec(cells.at(-1));
+    assert.ok(m, `the ruling cell links to the page: ${cells.at(-1)}`);
+    return { job: Number.parseInt(cells[0], 10), tx: m[1], signer: m[2] };
   });
   assert.equal(fromReadme.length, 8);
-  assert.deepEqual(RULINGS.map(({ job, tx }) => ({ job, tx })), fromReadme);
+  assert.deepEqual(RULINGS.map(({ job, tx, signer }) => ({ job, tx, signer })), fromReadme);
+  assert.ok(!/nearblocks\.io\/txns/.test(readme), "no links to the testnet explorer, which stopped indexing on Sep 27 2026");
   const prose = section.replace(/\s+/g, " ");
   assert.ok(prose.includes("Signers: jobs 1 and 3 were signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`."));
   for (const r of RULINGS) assert.equal(r.signer, [1, 3].includes(r.job) ? "judgenear-client.testnet" : "judgenear-worker.testnet", r.tx);
@@ -31,9 +35,8 @@ test("the page's published escrow build is the agents' and contract/BUILD.md's",
   assert.ok(readFileSync(path.join(root, "contract/BUILD.md"), "utf8").includes(`SHA-256 base58 (NEAR code_hash form): \`${PUBLISHED_ESCROW_CODE_HASH}\``));
 });
 
-test("current state is read from regular testnet nodes first, then from the archival nodes", () => {
-  assert.deepEqual([...TESTNET_STATE_RPCS], ["https://rpc.testnet.near.org", "https://rpc.testnet.fastnear.com", ...TESTNET_ARCHIVAL_RPCS]);
-  assert.equal(TESTNET_STATE_RPCS[0], agentsConfig.DEFAULT_RPC_URL);
+test("current state is read from FastNEAR's regular node first (0.2 to 0.5 s a call), then NEAR's, then the archival nodes", () => {
+  assert.deepEqual([...TESTNET_STATE_RPCS], ["https://rpc.testnet.fastnear.com", "https://rpc.testnet.near.org", ...TESTNET_ARCHIVAL_RPCS]);
 });
 
 // ---- reading the escrow: a fake chain that answers view_account, get_judge and list_jobs ----
@@ -53,7 +56,10 @@ const jobView = (n, extra = {}) => ({
 });
 
 /** `fail` maps a host to a response maker that fails; every other host answers from the fake chain. */
-function fakeChain({ codeHash = PUBLISHED_ESCROW_CODE_HASH, jobs = [], fail = {}, contractError } = {}) {
+const FULL = { public_key: "ed25519:Full", access_key: { nonce: 1, permission: "FullAccess" } };
+const LIMITED = { public_key: "ed25519:Fn", access_key: { nonce: 1, permission: { FunctionCall: { allowance: null, receiver_id: "x.testnet", method_names: [] } } } };
+
+function fakeChain({ codeHash = PUBLISHED_ESCROW_CODE_HASH, jobs = [], fail = {}, contractError, accessKeys = [] } = {}) {
   const asked = [];
   const fetchImpl = async (url, init) => {
     const { method, params } = JSON.parse(init.body);
@@ -61,6 +67,7 @@ function fakeChain({ codeHash = PUBLISHED_ESCROW_CODE_HASH, jobs = [], fail = {}
     if (fail[url]) return fail[url]();
     let result;
     if (params.request_type === "view_account") result = { code_hash: codeHash, amount: "1", block_height: 275900123 };
+    else if (params.request_type === "view_access_key_list") result = { keys: accessKeys };
     else if (contractError) result = { error: contractError, logs: [] };
     else if (params.method_name === "get_judge") result = { result: bytesOf(JUDGE), logs: [] };
     else if (params.method_name === "list_jobs") {
@@ -130,4 +137,35 @@ test("jobOutcome says in one line what happened to a job, and whether a sealed k
   assert.equal(jobOutcome(pub("Submitted")), "Delivered; waiting for a ruling.");
   assert.equal(jobOutcome(pub("Ruling")), "OutLayer is running the judge.");
   assert.equal(jobOutcome(pub("Lost")), "Unknown state: Lost");
+});
+
+test("readEscrow counts the escrow's full-access keys: none means nobody can replace its code", async () => {
+  const locked = await readEscrow(ESCROW, { fetchImpl: fakeChain({ accessKeys: [] }).fetchImpl });
+  assert.equal(locked.fullAccessKeys, 0);
+  const open = await readEscrow(ESCROW, { fetchImpl: fakeChain({ accessKeys: [FULL, LIMITED] }).fetchImpl });
+  assert.equal(open.fullAccessKeys, 1, "a function-call key cannot deploy code; only full-access keys count");
+});
+
+test("readEscrow asks for the code hash, the keys, the judge and the first page of jobs at once, not one after another", async () => {
+  const chain = fakeChain({ jobs: [jobView(0)] });
+  const started = [];
+  const release = [];
+  const fetchImpl = (url, init) => {
+    started.push(JSON.parse(init.body).params);
+    return new Promise((resolve) => release.push(() => resolve(chain.fetchImpl(url, init))));
+  };
+  const reading = readEscrow(ESCROW, { fetchImpl });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(started.map((p) => p.method_name ?? p.request_type).sort(), ["get_judge", "list_jobs", "view_access_key_list", "view_account"]);
+  while (release.length) release.shift()();
+  const got = await reading;
+  assert.equal(got.jobs.length, 1);
+});
+
+test("parseDeepLink reads ?tx=&signer= for the verifier, and refuses anything that is not a hash and an account id", () => {
+  const tx = "5E4FiCfc1CQ7ywUeEDZ9jVMpkronjaCH4oNWWqM8hN71";
+  assert.deepEqual(parseDeepLink(`?tx=${tx}&signer=judgenear-worker.testnet`), { tx, signer: "judgenear-worker.testnet" });
+  for (const bad of ["", "?tx=abc&signer=judgenear-worker.testnet", `?tx=${tx}`, `?tx=${tx}&signer=Not An Account`, `?tx=${tx}0OIl&signer=a.testnet`, `?signer=a.testnet`]) {
+    assert.equal(parseDeepLink(bad), null, bad);
+  }
 });

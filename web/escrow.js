@@ -9,8 +9,9 @@ export const ESCROW = "judgenear-escrow.testnet";
 /** NEAR's code hash (base58 SHA-256) of the escrow build in contract/BUILD.md. */
 export const PUBLISHED_ESCROW_CODE_HASH = "Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga";
 
-/** Current state (jobs, judge, code hash) comes from regular testnet nodes; the archival nodes are the fallback. */
-export const TESTNET_STATE_RPCS = Object.freeze(["https://rpc.testnet.near.org", "https://rpc.testnet.fastnear.com", ...TESTNET_ARCHIVAL_RPCS]);
+/** Current state (jobs, judge, code hash, keys) comes from regular testnet nodes, FastNEAR's first (0.2 to 0.5 s a
+ *  call against 3 to 4 s for NEAR's, measured Nov 2 2026); the archival nodes are the fallback. */
+export const TESTNET_STATE_RPCS = Object.freeze(["https://rpc.testnet.fastnear.com", "https://rpc.testnet.near.org", ...TESTNET_ARCHIVAL_RPCS]);
 
 /**
  * The rulings of the escrow's jobs, as listed in the README's table. The chain has no index from a
@@ -45,21 +46,41 @@ async function viewFunction(account, method, args, { rpc, fetchImpl }) {
 }
 
 /**
- * The escrow's code hash, its judge and every job. The contract never removes a job (create_job
- * takes next_id and increments it), so the n-th entry of list_jobs(from_index) is job from_index + n.
+ * The escrow's code hash, its full-access keys, its judge and every job; the first four reads go out at
+ * once. A full-access key can deploy new code to the account, so none means nobody can replace the
+ * escrow's code. The contract never removes a job (create_job takes next_id and increments it), so the
+ * n-th entry of list_jobs(from_index) is job from_index + n.
  */
 export async function readEscrow(escrow = ESCROW, { rpc = TESTNET_STATE_RPCS, fetchImpl = globalThis.fetch } = {}) {
-  const account = await rpcCall(rpc, "query", { request_type: "view_account", finality: "final", account_id: escrow }, fetchImpl);
-  const judge = await viewFunction(escrow, "get_judge", {}, { rpc, fetchImpl });
+  const [account, keys, judge, first] = await Promise.all([
+    rpcCall(rpc, "query", { request_type: "view_account", finality: "final", account_id: escrow }, fetchImpl),
+    rpcCall(rpc, "query", { request_type: "view_access_key_list", finality: "final", account_id: escrow }, fetchImpl),
+    viewFunction(escrow, "get_judge", {}, { rpc, fetchImpl }),
+    viewFunction(escrow, "list_jobs", { from_index: 0, limit: PAGE_SIZE }, { rpc, fetchImpl }),
+  ]);
   const jobs = [];
+  let list = first;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const from = page * PAGE_SIZE;
-    const list = await viewFunction(escrow, "list_jobs", { from_index: from, limit: PAGE_SIZE }, { rpc, fetchImpl });
     if (!Array.isArray(list)) throw new Error(`list_jobs on ${escrow} did not return a list`);
+    const from = page * PAGE_SIZE;
     list.forEach((job, n) => jobs.push({ id: from + n, ...job }));
     if (list.length < PAGE_SIZE) break;
+    list = await viewFunction(escrow, "list_jobs", { from_index: from + PAGE_SIZE, limit: PAGE_SIZE }, { rpc, fetchImpl });
   }
-  return { escrow, blockHeight: account.block_height, codeHash: account.code_hash, publishedBuild: account.code_hash === PUBLISHED_ESCROW_CODE_HASH, judge, jobs };
+  const fullAccessKeys = (Array.isArray(keys?.keys) ? keys.keys : []).filter((k) => k?.access_key?.permission === "FullAccess").length;
+  return { escrow, blockHeight: account.block_height, codeHash: account.code_hash, publishedBuild: account.code_hash === PUBLISHED_ESCROW_CODE_HASH, fullAccessKeys, judge, jobs };
+}
+
+const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
+const ACCOUNT_ID = /^(?=.{2,64}$)[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
+
+/** A link to one transaction, ?tx=<hash>&signer=<account>: {tx, signer}, or null when either is missing or malformed. */
+export function parseDeepLink(search) {
+  const q = new URLSearchParams(search ?? "");
+  const tx = q.get("tx");
+  const signer = q.get("signer");
+  if (!tx || !signer || !TX_HASH.test(tx) || !ACCOUNT_ID.test(signer)) return null;
+  return { tx, signer };
 }
 
 /** A yoctoNEAR amount (decimal string) as NEAR, exactly. */
@@ -90,3 +111,4 @@ export function jobOutcome(job) {
       return `Unknown state: ${job.state}`;
   }
 }
+
