@@ -1,7 +1,7 @@
 // Read the testnet escrow's jobs for the page: its code hash, its judge and every job, through
 // read-only RPC calls. Nothing here signs or sends anything.
 
-import { RPC_TIMEOUT_MS, TESTNET_ARCHIVAL_RPCS, rpcCall } from "./verify.js";
+import { TESTNET_ARCHIVAL_RPCS, rpcCall } from "./verify.js";
 
 /** The escrow deployed on testnet (README, "The escrow on testnet"). */
 export const ESCROW = "judgenear-escrow.testnet";
@@ -60,9 +60,21 @@ const MAX_PAGES = 100;
 export const TESTNET_TX_INDEX = "https://tx.test.fastnear.com";
 const INDEX_LIMIT = 200;
 const INDEX_MAX_PAGES = 10;
-const INDEX_BATCH = 20;
+const INDEX_BATCH = 10;
+/** Finding rulings never holds up the page (it draws the jobs first), so the index gets more time than an RPC call. */
+const INDEX_TIMEOUT_MS = 20_000;
 
-async function indexPost(index, route, body, fetchImpl, timeoutMs) {
+/** One index request, asked a second time after a failure: a busy index sometimes drops a request or its preflight. */
+async function indexPost(index, route, body, fetchImpl, timeoutMs, retryDelayMs) {
+  try {
+    return await indexPostOnce(index, route, body, fetchImpl, timeoutMs);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    return indexPostOnce(index, route, body, fetchImpl, timeoutMs);
+  }
+}
+
+async function indexPostOnce(index, route, body, fetchImpl, timeoutMs) {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), timeoutMs);
   try {
@@ -117,21 +129,24 @@ export function rulingFromIndexed(indexed, escrow = ESCROW) {
  * escrow, then the request_ruling calls among them. The index only finds transactions; Verify checks each one from
  * NEAR archival nodes, so an index that left one out could hide a ruling but never make one pass.
  */
-export async function discoverRulings(escrow = ESCROW, { index = TESTNET_TX_INDEX, fetchImpl = globalThis.fetch, timeoutMs = RPC_TIMEOUT_MS } = {}) {
+export async function discoverRulings(escrow = ESCROW, { index = TESTNET_TX_INDEX, fetchImpl = globalThis.fetch, timeoutMs = INDEX_TIMEOUT_MS, retryDelayMs = 800 } = {}) {
   const hashes = [];
   let token;
   for (let page = 0; page < INDEX_MAX_PAGES; page++) {
-    const listed = await indexPost(index, "/v0/account", { account_id: escrow, limit: INDEX_LIMIT, ...(token === undefined ? {} : { resume_token: token }) }, fetchImpl, timeoutMs);
+    const listed = await indexPost(index, "/v0/account", { account_id: escrow, limit: INDEX_LIMIT, ...(token === undefined ? {} : { resume_token: token }) }, fetchImpl, timeoutMs, retryDelayMs);
     for (const t of Array.isArray(listed?.account_txs) ? listed.account_txs : []) {
       if (t?.is_receiver && t?.is_function_call && typeof t.transaction_hash === "string" && !hashes.includes(t.transaction_hash)) hashes.push(t.transaction_hash);
     }
     token = listed?.resume_token ?? undefined;
     if (token === undefined || token === null) break;
   }
+  // The batches go out together: a slow answer for one does not wait behind the others.
+  const batches = [];
+  for (let i = 0; i < hashes.length; i += INDEX_BATCH) batches.push(hashes.slice(i, i + INDEX_BATCH));
+  const answers = await Promise.all(batches.map((tx_hashes) => indexPost(index, "/v0/transactions", { tx_hashes }, fetchImpl, timeoutMs, retryDelayMs)));
   const found = [];
-  for (let i = 0; i < hashes.length; i += INDEX_BATCH) {
-    const batch = await indexPost(index, "/v0/transactions", { tx_hashes: hashes.slice(i, i + INDEX_BATCH) }, fetchImpl, timeoutMs);
-    for (const t of Array.isArray(batch?.transactions) ? batch.transactions : []) {
+  for (const answer of answers) {
+    for (const t of Array.isArray(answer?.transactions) ? answer.transactions : []) {
       const r = rulingFromIndexed(t, escrow);
       if (r) found.push(r);
     }

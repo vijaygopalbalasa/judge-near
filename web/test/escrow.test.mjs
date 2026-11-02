@@ -229,7 +229,7 @@ test("discoverRulings finds the escrow's rulings through FastNEAR's transaction 
   const account = asked.filter((a) => a.url.endsWith("/v0/account"));
   assert.deepEqual(account.map((a) => a.body), [{ account_id: ESCROW, limit: 200 }]);
   const batches = asked.filter((a) => a.url.endsWith("/v0/transactions"));
-  assert.ok(batches.length >= 2 && batches.every((b) => b.body.tx_hashes.length <= 20), "transactions are asked for in batches of at most 20");
+  assert.ok(batches.length >= 4 && batches.every((b) => b.body.tx_hashes.length <= 10), "transactions are asked for in batches of at most 10, all at once");
 });
 
 test("discoverRulings reads every page of the index (resume_token), stops after ten pages, and fails loudly on an HTTP error", async () => {
@@ -285,4 +285,25 @@ test("mergeRulings: the index's rulings plus any listed one it left out; the lis
   assert.deepEqual(mergeRulings(listed, found).map((r) => r.tx), ["A", "B", "C"]);
   assert.equal(mergeRulings(listed, found).at(-1).keyMissing, true);
   assert.deepEqual(mergeRulings(listed, null), listed);
+});
+
+test("discoverRulings asks again, once, when an index request fails, as a busy index sometimes does", async () => {
+  let failures = 1;
+  const asked = [];
+  const flaky = async (url, init) => {
+    const body = JSON.parse(init.body);
+    asked.push(url);
+    if (url.endsWith("/v0/transactions") && failures > 0) {
+      failures--;
+      throw new TypeError("Failed to fetch");
+    }
+    if (url.endsWith("/v0/account")) return ok(indexFixture.account);
+    return ok({ transactions: body.tx_hashes.map((h) => indexFixture.transactions[h]).filter(Boolean) });
+  };
+  const found = await discoverRulings(ESCROW, { fetchImpl: flaky, retryDelayMs: 0 });
+  assert.equal(found.length, 10, "the failed batch was asked again and answered");
+  const always = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+  await assert.rejects(discoverRulings(ESCROW, { fetchImpl: always, retryDelayMs: 0 }), /did not answer: Failed to fetch/);
 });

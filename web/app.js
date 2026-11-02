@@ -185,35 +185,45 @@ function jobCard(job, jobs, allRulings) {
 
 async function loadJobs() {
   const status = $("jobs-status");
-  // Rulings come from FastNEAR's transaction index; the list in escrow.js stands in when it does not answer.
+  // Rulings come from FastNEAR's transaction index. The jobs show at once with the list in escrow.js; the index's
+  // answer is merged in when it comes, and only cards whose rulings changed are drawn again.
   const indexed = discoverRulings(ESCROW).catch((err) => ({ error: err }));
+  let escrow;
   try {
-    const escrow = await readEscrow(ESCROW);
-    const found = await indexed;
-    const rulings = mergeRulings(RULINGS, Array.isArray(found) ? found : null);
-    const facts = $("escrow-facts");
-    facts.replaceChildren(
-      escrow.publishedBuild
-        ? markItem("ok", "Runs the published escrow build", `code hash ${escrow.codeHash} (contract/BUILD.md)`)
-        : markItem("bad", "Does not run the published escrow build", `code hash ${escrow.codeHash}`),
-      PUBLISHED_JUDGES.has(escrow.judge.hash)
-        ? markItem("ok", `Its judge is ${PUBLISHED_JUDGES.get(escrow.judge.hash)}`, `sha256 ${escrow.judge.hash}`)
-        : markItem("bad", "Its judge is not a published Judge on NEAR build", `sha256 ${escrow.judge.hash}`),
-      escrow.fullAccessKeys === 0
-        ? markItem("ok", "No full-access key: nobody can replace its code", "the account has no key that can deploy")
-        : markItem("skip", `Still has ${escrow.fullAccessKeys === 1 ? "a full-access key" : `${escrow.fullAccessKeys} full-access keys`}: its owner could replace the code`, "see the README, \"Security model and honest limits\""),
-    );
-    status.className = "summary";
-    const shown = escrow.jobs.slice(-MAX_CARDS).reverse();
-    const source = Array.isArray(found)
-      ? "rulings found through FastNEAR's transaction index"
-      : `rulings from the list in escrow.js (the transaction index did not answer: ${found.error.message})`;
-    status.textContent = `${escrow.jobs.length} jobs and ${rulings.length} rulings, read at block ${escrow.blockHeight}; newest first${escrow.jobs.length > MAX_CARDS ? `, the ${MAX_CARDS} newest shown` : ""}; ${source}.`;
-    $("jobs").replaceChildren(...shown.map((job) => jobCard(job, escrow.jobs, rulings)));
+    escrow = await readEscrow(ESCROW);
   } catch (err) {
     status.className = "summary bad";
     status.textContent = `Could not read the escrow: ${err.message}`;
+    return;
   }
+  $("escrow-facts").replaceChildren(
+    escrow.publishedBuild
+      ? markItem("ok", "Runs the published escrow build", `code hash ${escrow.codeHash} (contract/BUILD.md)`)
+      : markItem("bad", "Does not run the published escrow build", `code hash ${escrow.codeHash}`),
+    PUBLISHED_JUDGES.has(escrow.judge.hash)
+      ? markItem("ok", `Its judge is ${PUBLISHED_JUDGES.get(escrow.judge.hash)}`, `sha256 ${escrow.judge.hash}`)
+      : markItem("bad", "Its judge is not a published Judge on NEAR build", `sha256 ${escrow.judge.hash}`),
+    escrow.fullAccessKeys === 0
+      ? markItem("ok", "No full-access key: nobody can replace its code", "the account has no key that can deploy")
+      : markItem("skip", `Still has ${escrow.fullAccessKeys === 1 ? "a full-access key" : `${escrow.fullAccessKeys} full-access keys`}: its owner could replace the code`, "see the README, \"Security model and honest limits\""),
+  );
+  status.className = "summary";
+  const shown = escrow.jobs.slice(-MAX_CARDS).reverse();
+  const line = (count, source) => `${escrow.jobs.length} jobs and ${count} rulings, read at block ${escrow.blockHeight}; newest first${escrow.jobs.length > MAX_CARDS ? `, the ${MAX_CARDS} newest shown` : ""}; ${source}.`;
+  status.textContent = line(RULINGS.length, "rulings from the list in escrow.js while FastNEAR's transaction index is asked");
+  $("jobs").replaceChildren(...shown.map((job) => jobCard(job, escrow.jobs, RULINGS)));
+
+  const found = await indexed;
+  if (!Array.isArray(found)) {
+    status.textContent = line(RULINGS.length, `rulings from the list in escrow.js (the transaction index did not answer: ${found.error.message})`);
+    return;
+  }
+  const rulings = mergeRulings(RULINGS, found);
+  const key = (list, id) => JSON.stringify(list.filter((r) => r.job === id).map((r) => [r.tx, Boolean(r.keyMissing)]));
+  for (const job of shown) {
+    if (key(rulings, job.id) !== key(RULINGS, job.id)) $(`job-${job.id}`)?.replaceWith(jobCard(job, escrow.jobs, rulings));
+  }
+  status.textContent = line(rulings.length, "rulings found through FastNEAR's transaction index");
 }
 
 // A disclosed delivery loaded from a file keeps its exact bytes; a text box turns CRLF line endings into LF.
