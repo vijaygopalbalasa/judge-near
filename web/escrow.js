@@ -7,7 +7,7 @@ import { RPC_TIMEOUT_MS, TESTNET_ARCHIVAL_RPCS, rpcCall } from "./verify.js";
 export const ESCROW = "judgenear-escrow.testnet";
 
 /** NEAR's code hash (base58 SHA-256) of the escrow build in contract/BUILD.md. */
-export const PUBLISHED_ESCROW_CODE_HASH = "Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga";
+export const PUBLISHED_ESCROW_CODE_HASH = "HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t";
 
 /** Current state (jobs, judge, code hash, keys) comes from regular testnet nodes, FastNEAR's first (0.2 to 0.5 s a
  *  call against 3 to 4 s for NEAR's, measured Nov 2 2026); the archival nodes are the fallback. */

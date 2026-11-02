@@ -93,9 +93,13 @@ string.
   nested checks, 602.5 million), 1.75 MB and 22 ms
   (`judge-wasm/RESOURCE-LIMITS.md`, guarded by `judge-wasm/scripts/fuel-check.sh`). The contract asks OutLayer for
   50 billion instructions, 64 MB and 30 seconds, so valid criteria cannot exhaust the run and force a null result.
-- Refunds: a Funded job (nothing delivered) refunds the client from `expires_at`. A Submitted or Ruling job refunds
-  the client only from `expires_at` plus a grace period (1 hour), so delivered work always gets a window for a ruling,
-  and money can never lock if nobody asks for one.
+- Refunds: a Funded job (nothing delivered) refunds the client from `expires_at`. A Submitted job refunds the client
+  only from `expires_at` plus a grace period (1 hour), so delivered work always gets a window for a ruling, and money
+  can never lock if nobody asks for one. From that moment no ruling can start (`request_ruling` refuses), and a job in
+  Ruling refunds only one day later (`RULING_STALE_NS`), when no ruling can still be running: a ruling still running
+  could otherwise publish `k` after the client took the refund. Only a lost callback leaves a job in Ruling that
+  long, so money still cannot lock. (Escrow v2, replaced on Nov 3 2026, let a Ruling job refund at the end of the
+  grace hour.)
 - The callback reads the raw promise result bytes (never a typed `#[callback_result]` that could panic on a
   surprise shape). OutLayer returns the guest's JSON as is when the run succeeds, and `null` for any failure.
 - The contract acts on a verdict only if: it parses, `v == 1`, `ch` and `dh` equal the hashes it stored for that job,

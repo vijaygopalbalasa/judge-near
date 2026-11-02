@@ -15,7 +15,7 @@ export const USER_AGENT = "judge-near-agents/0.1";
 // The escrow build this repo publishes (contract/BUILD.md), as the code hash NEAR reports for
 // an account that runs it. Live commands refuse any other escrow code unless the user names
 // that exact hash with --escrow-code-hash.
-export const PUBLISHED_ESCROW_CODE_HASH = "Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga";
+export const PUBLISHED_ESCROW_CODE_HASH = "HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t";
 
 // The most a ruling may attach. Whoever deploys an escrow picks its min_ruling_deposit; above
 // this cap the ruling command refuses to sign.

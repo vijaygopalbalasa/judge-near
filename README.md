@@ -33,7 +33,8 @@ node jn.mjs verify --tx G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1 --signer ju
 - Testnet only, and no outside users yet.
 - The judge checks what a program can check: fields, length, terms, JSON shape, an exact SHA-256. It cannot tell
   whether a report's facts are true ([more below](#what-the-judge-checks-and-what-it-cannot)).
-- The escrow account still has its deploy key, so its owner could replace the code. Removing it is one transaction.
+- The escrow account still has its deploy key, so its owner could replace the code. It was used once, to deploy a
+  fix (below). Removing it is one transaction.
 - You trust Intel TDX and OutLayer: its workers, its keystore and its contract.
 
 Built at NEAR HACKATHON (Nov 1 to 14, 2026). Tracks: Privacy & Private AI, Agent Economy, AI Security & Defense.
@@ -101,7 +102,7 @@ http://localhost:8080/web/.
 - **Try the judge** runs it on criteria and a delivery you type, after checking that the judge file is a published
   build. It has four examples and names the problem in criteria the judge calls invalid.
 - **Jobs on the escrow** reads it live. Expected: "Runs the published escrow build" (code hash
-  `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`) and "Its judge is judge v2" in green, and an amber line while the
+  `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`) and "Its judge is judge v2" in green, and an amber line while the
   account still has its deploy key. Below that, one card per job, newest first, each with its rulings. FastNEAR's
   transaction index finds the rulings; the list in `web/escrow.js` stands in when it does not answer.
 - **Verify** on job 0's ruling gives eleven green checks and "Verified". A sealed ruling without its key gives nine
@@ -122,7 +123,8 @@ agent would deliver next, with the judge's verdict on it.
   itself, because the proof is re-running the judge.
 - **The escrow** (`contract/`) pins the judge's URL and SHA-256 at deployment and has no method to change them. Only
   the client or the worker may ask for a ruling, and they pay a minimum fee, so rulings cannot stall a job. Delivered
-  work gets an hour of grace after the deadline before any refund, and a lost callback can never lock money.
+  work gets an hour of grace after the deadline before any refund. No refund is possible while a ruling runs, and a
+  lost callback can never lock money.
 - **Sealed mode** (`docs/interface.md`, section 6) keeps the delivery encrypted. The worker's key is an OutLayer
   secret bound to the judge's wasm hash and to the escrow as the only caller. The judge decrypts inside the TEE,
   checks the delivery against `dh`, and on a pass seals the key to the client's X25519 key.
@@ -187,9 +189,12 @@ the owner. A third party's contract was not run; it would be another caller that
 
 `judgenear-escrow.testnet` was deployed and initialised in one transaction,
 [FfrcKX...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FfrcKXWFetEq4pUt7WvoztNFQ1jsQusb2bP1rpdWoYva&signer=judgenear-escrow.testnet),
-with `tools/deploy-escrow.mjs`. NEAR reports its code hash as `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`, the
-build in `contract/BUILD.md`. Its `get_judge` names judge v2 (URL pinned to commit fd3dcc6, SHA-256 `911b8a35...`).
-The account still has its deploy key; see the limits below. Each job ran between `judgenear-client.testnet` and
+with `tools/deploy-escrow.mjs`. On Nov 3 the same tool replaced its code with v3, code only, [9YmrPJ...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=9YmrPJV8uRJhZ3YmVXkSmsiqhjjrpW3i52K9BFkNkXUS&signer=judgenear-escrow.testnet), to close a refund
+race ([the limits](#security-model-and-honest-limits) say which). It checked that `get_judge` and all nine jobs read
+back unchanged. NEAR reports its code hash as `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`, the build in
+`contract/BUILD.md`. Its `get_judge` names judge v2 (URL pinned to commit fd3dcc6, SHA-256 `911b8a35...`). The jobs
+below ran under v2; their rulings verify the same way, because the verifier reads each ruling from its own
+transaction. The account still has its deploy key; see the limits below. Each job ran between `judgenear-client.testnet` and
 `judgenear-worker.testnet`, 0.5 NEAR each, on Nov 2 2026: jobs 0 to 4 step by step with `agents/jn.mjs`, jobs 5 to 8
 by the two agents ([below](#two-agents-no-human)).
 
@@ -260,7 +265,7 @@ delivery, after the worker's own check said it would fail.
 | Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for ten rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4 re-run in full on their disclosed text |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused |
 | Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
-| Escrow (near-sdk 5), public and sealed jobs | Works: 112 unit tests, 13 sandbox tests, 79 planted bugs caught; deployed as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
+| Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 3), code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/jn.mjs`) | Works: create, fund, submit, sealed submit, ruling, open, verify, forget; checks criteria and deliveries with the judge before sending; checks the escrow's code and judge before any live step; every path run live on testnet |
 | Two agents (`agents/agent.mjs`) | Works: two passes and two fails live on testnet (jobs 5 to 8); 81 offline tests in `agents/` |
 
@@ -272,11 +277,11 @@ mutation runs.
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
 | `node --test web/test/*.test.mjs` | 63 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 sealed) finish under 3B instructions; needs `wasmtime` |
-| `cd contract && cargo test --lib --locked` | 112 passed; building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
-| `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed, 2 to 5 minutes; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow |
+| `cd contract && cargo test --lib --locked` | 116 passed; building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
+| `cd contract && cargo test --test integration -- --test-threads=1` | 14 passed, 3 to 8 minutes; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow |
 | `cd agents && npm ci && npm test` | 81 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 | `python3 judge-wasm/scripts/mutate.py` | 56 of 56 planted bugs caught, one at a time (3 to 10 minutes) |
-| `python3 contract/scripts/mutate.py` | 78 of 78 planted bugs caught by the unit tests (10 to 30 minutes); the 79th, `#[private]` removed, is caught only by the sandbox test `on_ruling_is_private`, checked by planting it by hand |
+| `python3 contract/scripts/mutate.py` | 82 of 82 planted bugs caught by the unit tests (10 to 30 minutes); the 83rd, `#[private]` removed, is caught only by the sandbox test `on_ruling_is_private`, checked by planting it by hand |
 
 **Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 
@@ -322,16 +327,22 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
   the guess: sealing hides work that cannot be guessed, not a yes-or-no answer. The ciphertext's length gives the
   delivery's length (there is no padding), and OutLayer records each run's instruction count and time. On a fail the
   client sees which of its own checks failed, not the delivery.
-- **Deadlines:** a delivered job becomes refundable one hour after its deadline. If no ruling lands before then (for
-  example, if OutLayer is down), the client can take the refund even for a delivery that would have passed. Money
-  never locks; a late worker can lose.
+- **Deadlines:** a delivered job becomes refundable one hour after its deadline, and from then on no ruling can
+  start. While a ruling runs, no refund is possible. If no ruling lands before the hour ends (for example, if OutLayer
+  is down), the client can take the refund even for a delivery that would have passed: money never locks, and a late
+  worker can lose. A ruling lost for a whole day can be refunded too.
+- **The refund race, fixed on Nov 3:** escrow v2 let a client ask for a ruling after the grace hour and take the
+  refund a block later. OutLayer still ran the judge and published `k`, sealed to the client, while the escrow paid
+  nobody. v3 closes it with the two rules above; `late_ruling_cannot_be_refunded_while_it_runs` replays the attack in
+  the sandbox, with the ruling held open as OutLayer's yield holds it (it fails on v2 and passes on v3).
 - **Cost bound:** the judge's measured worst case over adversarial but valid inputs is about 0.60 billion
   instructions and 22 ms; the escrow asks OutLayer for 50 billion instructions and 30 seconds
   (`judge-wasm/RESOURCE-LIMITS.md`).
 - **The escrow account:** OutLayer's keystore rule names the escrow account, so a worker also trusts the code that
   account runs. `agents/` checks its code hash and judge before every live step, but an account that still has a
-  full-access key can have its code replaced by its owner. `judgenear-escrow.testnet` still has its deploy key; the
-  page shows this in amber and turns it green once the key is gone. Settled jobs keep no key in the vault (the worker
+  full-access key can have its code replaced by its owner. `judgenear-escrow.testnet` still has its deploy key; its
+  owner used it once, on Nov 3 2026, to deploy v3. The page shows this in amber and turns it green once the key is
+  gone. Settled jobs keep no key in the vault (the worker
   deletes it), so a replaced escrow could not read them.
 - **Testnet only** so far. No third-party users yet.
 

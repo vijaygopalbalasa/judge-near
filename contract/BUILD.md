@@ -33,22 +33,29 @@ Checks run on the result: `strings` finds no absolute home-directory or source-c
 (registry paths read `/cargo/registry/...`), and a forced recompile with the same flags gives a
 byte-identical wasm.
 
-## Artifacts (Nov 2 2026, sealed mode)
+## Artifacts (Nov 3 2026, v3)
 
 ### Escrow: judge_escrow.wasm (deployable)
 - Path: `contract/target/near/judge_escrow.wasm`
-- Size: 195834 bytes (the public-only v1 committed as 9c432bf was 179461 bytes, sha256 a0130b87...)
-- SHA-256 hex: `b13cef3dd19730818f1db4ac85c135bfccf671eaca92315d853ed5f4f3b9f223`
-- SHA-256 base58 (NEAR code_hash form): `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`
+- Size: 196159 bytes
+- SHA-256 hex: `f55de7417a4bd707390a40e86a37adb616b3eb5a9dacdd094acce86dc02bf019`
+- SHA-256 base58 (NEAR code_hash form): `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`
 - ABI: `contract/target/near/judge_escrow_abi.json` (also embedded)
 - NEP-330 source metadata embeds the `repository` link from Cargo.toml
   (`https://github.com/vijaygopalbalasa/judge-near`); changing that field changes the hash.
+- v3 changes only the refund and ruling deadlines (no refund while a ruling runs, no ruling once the grace window
+  ends); the stored state has the same layout, so v3 replaced v2 on the same account, code only.
+
+### Escrow v2 (deployed Nov 2 2026, replaced by v3 on Nov 3)
+- Size: 195834 bytes (the public-only v1 committed as 9c432bf was 179461 bytes, sha256 a0130b87...)
+- SHA-256: `b13cef3dd19730818f1db4ac85c135bfccf671eaca92315d853ed5f4f3b9f223`, base58
+  `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`; built from commit 1c6a29f and earlier.
 
 ### Mock OutLayer: mock_outlayer.wasm (tests only, never deployed)
 - Path: `contract/mock-outlayer/target/near/mock_outlayer.wasm`
-- Size: 128780 bytes
-- SHA-256 hex: `ca35736327808bb005c29368d4886c5a0ccd935926527ebf28dc9931db93e649`
-- SHA-256 base58: `EcLdNPB6atV4Qjn2sCQMhTrFM3XaGUrP3ZY7MFxWMQYx`
+- Size: 134322 bytes (with the hold mode that parks a yield, Nov 3 2026)
+- SHA-256 hex: `8591f9db1df0eb6d96273a8da681fd3884179d79c4c6b87754a2477dd0d80e46`
+- SHA-256 base58: `9zQKtiBJWZsGCqXtLJPV24nAnEkL5KVaJ89Popw6MSX7`
 
 ## Dependencies
 
