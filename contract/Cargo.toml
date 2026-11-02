@@ -20,6 +20,8 @@ near-workspaces = { version = "0.24", features = ["unstable"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 anyhow = "1"
+# Test-only oracle for the small-order X25519 blocklist; never part of the contract wasm.
+x25519-dalek = "2"
 
 [profile.release]
 codegen-units = 1

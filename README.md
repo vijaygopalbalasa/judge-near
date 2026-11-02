@@ -20,8 +20,7 @@ AI Security & Defense.
 | Judge running on OutLayer testnet | Done: [tx 4VFvzo...](https://testnet.nearblocks.io/txns/4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk), verdict identical to a local run |
 | OutLayer vault rules for sealed keys | Verified on testnet with `tools/keystore-probe` (transactions below) |
 | Browser verifier (`web/`) | Done, runs locally; re-runs public and sealed rulings |
-| Escrow contract (near-sdk 5), public jobs | Done: 71 unit tests and 7 tests in the NEAR sandbox; testnet deployment next |
-| Escrow contract, sealed jobs | In progress |
+| Escrow contract (near-sdk 5), public and sealed jobs | Done: 112 unit tests, 13 tests in the NEAR sandbox, 79 of 79 planted bugs caught; testnet deployment next |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -45,8 +44,8 @@ The second panel runs the judge on criteria and a deliverable you type.
 | `cd judge-wasm && cargo test --locked` | 38 passed (Rust 1.95 or newer) |
 | `node --test web/test/*.test.mjs` | 18 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
-| `cd contract && cargo test --lib` | 71 passed (Rust 1.95 or newer) |
-| `cd contract && cargo test --test integration -- --test-threads=1` | 7 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
+| `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
+| `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
 
 **3. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 

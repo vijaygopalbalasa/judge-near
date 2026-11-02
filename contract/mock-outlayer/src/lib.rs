@@ -6,9 +6,9 @@
 //! real OutLayer parks a yield promise, but that difference is invisible to our callback, which only
 //! reads promise_result(0).
 //!
-//! The mock also records the last call's input_data and payer so a test can assert the escrow sent
-//! the shape we expect, and it can be told to panic to exercise the escrow's PromiseResult::Failed
-//! branch.
+//! The mock also records the last call's input_data, secrets_ref and payer so a test can assert the
+//! escrow sent the shape we expect, and it can be told to panic to exercise the escrow's
+//! PromiseResult::Failed branch.
 
 use near_sdk::{AccountId, PanicOnDefault, env, near};
 
@@ -21,6 +21,8 @@ pub struct MockOutlayer {
     /// When true, request_execution panics, simulating a contract-level failure.
     should_panic: bool,
     last_input_data: Option<String>,
+    /// The last secrets_ref as compact JSON text (None when the escrow sent null).
+    last_secrets_ref: Option<String>,
     last_payer: Option<AccountId>,
     last_deposit: near_sdk::json_types::U128,
     call_count: u64,
@@ -34,6 +36,7 @@ impl MockOutlayer {
             response: b"null".to_vec(),
             should_panic: false,
             last_input_data: None,
+            last_secrets_ref: None,
             last_payer: None,
             last_deposit: near_sdk::json_types::U128(0),
             call_count: 0,
@@ -69,9 +72,10 @@ impl MockOutlayer {
         payer_account_id: Option<AccountId>,
         params: Option<near_sdk::serde_json::Value>,
     ) {
-        let _ = (source, resource_limits, secrets_ref, response_format, params);
+        let _ = (source, resource_limits, response_format, params);
         self.call_count += 1;
         self.last_input_data = input_data;
+        self.last_secrets_ref = secrets_ref.map(|v| v.to_string());
         self.last_payer = payer_account_id;
         self.last_deposit = near_sdk::json_types::U128(env::attached_deposit().as_yoctonear());
         if self.should_panic {
@@ -82,6 +86,10 @@ impl MockOutlayer {
 
     pub fn get_last_input_data(&self) -> Option<String> {
         self.last_input_data.clone()
+    }
+
+    pub fn get_last_secrets_ref(&self) -> Option<String> {
+        self.last_secrets_ref.clone()
     }
 
     pub fn get_last_payer(&self) -> Option<AccountId> {

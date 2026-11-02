@@ -164,10 +164,15 @@ before it, as in section 3.
   `create_job` refuses a `client_pk` that is a known small-order X25519 point: with such a key the shared secret is
   all zeros, so anyone could open `k`.
 - `request_ruling` sends the sealed stdin above and `secrets_ref = {"profile": <6.2 profile>, "account_id": provider}`.
-- A pass is applied only if `k` is present and well formed; the contract stores `k` on the job and in the
-  `ruling_applied` event in the same callback that pays the provider.
-- `err:"key_missing"` moves no money and returns the job to Submitted (the provider can store the key and the job can
-  be ruled again; if nobody fixes it, the client is refunded after expiry plus grace). Every other verdict that
+- A pass is applied only if `k` is present and well formed (124 characters of standard base64 that decode to 93 bytes
+  starting with `0x01`); the contract stores `k` on the job and in the `ruling_applied` event in the same callback that
+  pays the provider. A pass without a well formed `k` moves no money and returns the job to Submitted (event
+  `ruling_rejected`, reason `invalid_k`).
+- The storage deposit for `submit_sealed` also covers the 128 bytes `k` takes when a pass stores it (a 4-byte length
+  plus 124 characters), because the paying callback cannot take a deposit. The rest of the deposit is refunded.
+- On a sealed job, `err:"key_missing"` moves no money and returns the job to Submitted (event `ruling_rejected`,
+  reason `key_missing`; the provider can store the key and the job can be ruled again; if nobody fixes it, the client
+  is refunded after expiry plus grace). Every other verdict that
   passes the `ch`/`dh`/attempt checks is applied as written (`pass:false`, including `bad_delivery`, refunds the client).
 - Per-check results are public on chain even for sealed jobs. The deliverable and `K` are not.
 

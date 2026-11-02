@@ -53,27 +53,82 @@ Open -> Funded -> Submitted -> Ruling -> Completed (provider paid) | Refunded (c
   must start with `https://`, judge_hash must be 64 lowercase hex (OutLayer's own WasmUrl rule),
   build_target non-empty, min_ruling_deposit > 0. All five are stored permanently: no owner, no admin,
   no setter.
-- `create_job(provider, criteria, expires_at_ns) -> u64` #[payable]: client = predecessor, criteria
-  <= 4096 bytes, provider != client, expires in the future. Stores criteria + ch. Storage deposit:
+- `create_job(provider, criteria, expires_at_ns, client_pk: Option<String>) -> u64` #[payable]:
+  client = predecessor, criteria <= 4096 bytes, provider != client, expires in the future. client_pk
+  present = sealed job: 64 lowercase hex and not a small-order X25519 point. Omitting client_pk in
+  the JSON args gives a public job (verified in the sandbox). Stores criteria + ch. Storage deposit:
   measured bytes x storage_byte_cost, excess refunded to the client.
 - `fund(job_id)` #[payable]: client only, Open -> Funded; the attached deposit is the escrow amount.
-- `submit(job_id, deliverable)` #[payable]: provider only, Funded -> Submitted, strictly before
-  expiry, deliverable <= 16384 bytes. Stores deliverable + dh. Storage deposit like create_job,
-  excess refunded to the provider.
+- `submit(job_id, deliverable)` #[payable]: public jobs only; provider only, Funded -> Submitted,
+  strictly before expiry, deliverable <= 16384 bytes. Stores deliverable + dh. Storage deposit like
+  create_job, excess refunded to the provider.
+- `submit_sealed(job_id, deliverable_ct, dh)` #[payable]: sealed jobs only; same provider, Funded and
+  expiry checks; deliverable_ct <= 21,884 bytes, dh 64 lowercase hex. Storage deposit covers the
+  write plus the 128 bytes k will take later; the rest is refunded.
 - `request_ruling(job_id)` #[payable]: only the job's client or provider; prepaid gas >= 170 TGas;
   attached deposit >= min_ruling_deposit; Submitted -> Ruling, attempt += 1. No expiry gate. Calls
   OutLayer with source WasmUrl{url, hash, Some(build_target)}, resource_limits {50_000_000_000
-  instructions, 64 MB, 30 s}, input_data = `{"criteria":..,"deliverable":..}` as a String,
-  secrets_ref None, response_format Json, payer_account_id = caller, params None, forwarding the
-  whole deposit; then `.then(on_ruling(job_id, attempt))`.
+  instructions, 64 MB, 30 s}, input_data as a String (public: `{"criteria","deliverable"}`; sealed:
+  `{"criteria","deliverable_ct","dh","client_pk"}`), secrets_ref (public: null; sealed:
+  `{"profile": <6.2 profile>, "account_id": provider}`), response_format Json, payer_account_id =
+  caller, params None, forwarding the whole deposit; then `.then(on_ruling(job_id, attempt))`.
 - `on_ruling(job_id, attempt)` #[private]: reads `promise_result_checked(0, 1024)`. Acts only on the
   live ruling (state Ruling and attempt matches), otherwise leaves the job alone. Failed / too long /
-  any other promise error -> Submitted, no money. Bytes: parse; act only if v == 1 and ch/dh equal the
-  stored hashes; pass -> Completed + pay provider, fail -> Refunded + refund client; anything else ->
-  Submitted, no money. Never panics; state is set before every transfer.
+  any other promise error -> Submitted, no money. Bytes: parse by field name; act only if v == 1 and
+  ch/dh equal the stored hashes, then apply_verdict: a sealed key_missing -> Submitted, no money;
+  pass:false -> Refunded + refund client; a sealed pass without a well formed k -> Submitted, no
+  money; otherwise pass -> Completed (+ k stored for a sealed job) + pay provider. Anything else ->
+  Submitted, no money. Never panics; state (and k) is set before every transfer.
 - `claim_refund(job_id)`: anyone; money always to the client; rules above.
-- Views: `get_job`, `get_judge` (outlayer, url, hash, build_target, min_ruling_deposit), `list_jobs`
-  (default page 10).
+- Views: `get_job` (adds sealed, client_pk, deliverable_ct, k), `get_judge` (outlayer, url, hash,
+  build_target, min_ruling_deposit), `get_secrets_profile(job_id)` (the sealed profile, else null),
+  `list_jobs` (default page 10).
+
+## Sealed mode (Nov 2; spec: docs/interface.md section 6)
+
+As built (the plan was written before code and reviewed; the one change is that key_missing is now
+gated to sealed jobs):
+- Job gains client_pk: Option<String> (Some = sealed), deliverable_ct: String, k: Option<String>.
+  JobView adds sealed (bool), client_pk, deliverable_ct, k. job_created event adds "sealed".
+- create_job(provider, criteria, expires_at_ns, client_pk: Option<String>): client_pk must be 64
+  lowercase hex and not a small-order X25519 point (libsodium's 7-entry blocklist, first 31 bytes
+  exact plus the last byte masked with 0x7f). The blocklist bytes are proven by a dev-only
+  x25519-dalek test (X25519(scalar, entry) == zeros for each entry); nothing new ships in the wasm.
+- submit refuses sealed jobs. submit_sealed(job_id, deliverable_ct, dh): provider only, sealed only,
+  Funded, strictly before expiry, ct <= 21,884 bytes, dh 64 lowercase hex, storage deposit with
+  excess refunded.
+- request_ruling on a sealed job: input_data {criteria, deliverable_ct, dh, client_pk} (exact stored
+  strings, no deliverable key) and secrets_ref {profile, account_id: provider}, matching OutLayer's
+  SecretsReference { profile: String, account_id: AccountId }. Profile
+  "jn-" + first 16 hex of sha256(escrow account id) + "-" + job id is at most 40 bytes of letters,
+  digits and '-', inside OutLayer's rule (1 to 64 bytes of alphanumerics, '-' or '_'). OutLayer does
+  not check that the profile exists at request time; a missing key reaches the judge as key_missing.
+- on_ruling, after the existing v/ch/dh/attempt checks: err "key_missing" -> no money, back to
+  Submitted, reason "key_missing" (checked before pass, because that verdict has pass:false and must
+  not refund). Sealed pass: applied only with a well formed k (124 chars of standard base64 decoding
+  to 93 bytes starting with 0x01, decoded with near-sdk's re-exported base64); k is stored and put in
+  ruling_applied in the same callback that pays the provider; without a valid k -> no money, back to
+  Submitted, reason "invalid_k". Everything else is applied as written. Public jobs ignore k.
+- Judgment call 1 (beyond the brief): storing k in on_ruling grows the job by 128 bytes (u32 length
+  prefix + 124) with no attached deposit. If the contract had no spare balance, the callback would
+  fail on storage staking and a passing provider would go unpaid. submit_sealed therefore charges
+  the provider for those 128 bytes up front (about 0.0013 NEAR) and keeps them as stake.
+- key_missing is a sealed-job rule only, as spec 6.4 frames it (changed after review from an earlier
+  "any job" plan). The public judge never emits it; if a public verdict carried it anyway, it is an
+  ordinary pass:false verdict and refunds the client. A test pins this.
+- A sealed pass without a well formed k is rejected with event reason "invalid_k" (the spec calls it
+  an invalid verdict; the distinct reason makes the cause visible on chain).
+- View get_secrets_profile(job_id) -> Option<String>: the profile for a sealed job, None otherwise.
+- submit and submit_sealed share two helpers (require_can_submit, record_submission), and the
+  verdict logic lives in apply_verdict, so each money-path check exists in exactly one place.
+- Tests use the judge's real vectors (judge-wasm/vectors/sealed.json) via include_str!, so contract
+  and judge are checked against the same bytes; verdicts are re-serialized with sorted keys the way
+  OutLayer delivers them (6.5). Vector 9 is the 897-byte longest legal verdict, vectors 5 and 40 give
+  the 21,884 / 21,885 ciphertext boundary.
+- Not a concern, checked: the sealed input stays under OutLayer's 32 KiB free input size (criteria at
+  most 4096 bytes, about 8 KiB after JSON escaping of valid JSON, plus a 21,884-character
+  base64 ciphertext). Only criteria that are not valid JSON could push it past 32 KiB, and the judge
+  would answer invalid_criteria for those anyway.
 
 ## Security review changes (Nov 1, from the team lead)
 
@@ -125,7 +180,8 @@ the literal values.
 Init arguments for `new`, testnet:
 
 - outlayer: `outlayer.testnet` (mainnet: `outlayer.near`)
-- judge_url: the https URL where the judge wasm is hosted (to be decided at deploy time)
+- judge_url: the https URL where the judge wasm is hosted. Sealed-capable judge pinned at commit
+  fd3dcc6: `https://raw.githubusercontent.com/vijaygopalbalasa/judge-near/fd3dcc65a9f616a6c7e9dc411a65de50560e2ed6/judge-wasm/release/judge.wasm`
 - judge_hash: the sha256 in `judge-wasm/release/judge.wasm.sha256` at the commit the judge_url points to.
   Public-only judge v1: `da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1` (161736 bytes,
   commit e09c6f9). Sealed-capable judge: `911b8a351d199d003735ceef138647ec8485de8eff197aa909f5db496b92c958`
@@ -170,8 +226,9 @@ Job payout logic only ever moves job.amount.
 
 ## Events (NEP-297, standard "judge_near", version "1.0.0")
 
-job_created, job_funded, deliverable_submitted, ruling_requested, ruling_applied (pass, score, eh),
-ruling_rejected (reason), refunded, completed.
+job_created (with sealed), job_funded, deliverable_submitted, ruling_requested, ruling_applied (pass,
+score, eh, k: the sealed key on a sealed pass, null otherwise), ruling_rejected (reason, including
+key_missing and invalid_k), refunded, completed.
 
 ## Deviations from the original brief
 
@@ -183,6 +240,10 @@ ruling_rejected (reason), refunded, completed.
    (both per the team lead's security review, Nov 1).
 5. on_ruling reads promise_result_checked (promise_result is deprecated in near-sdk 5.30); a result
    over 1 KiB is a clean rejection.
+6. Sealed mode, beyond the brief: submit_sealed charges the provider for the 128 bytes k will take
+   when a pass stores it (the callback cannot take a deposit; without the reserve a contract with no
+   spare balance would fail the callback on storage staking and leave a passing provider unpaid).
+   A test pins the constant to the measured growth.
 
 ## Versions and toolchain
 
@@ -210,6 +271,22 @@ Each change: tests written first, run, confirmed failing for the right reason, t
 Honest note on the first build round: there the implementation came first and the tests after, with
 mutation testing as the proof that the tests bite. This round was red-first throughout.
 
+## Red-first log (sealed round, Nov 2)
+
+Each step: tests first, a compile-level RED, then plumbing only so the rule tests fail for the right
+reason (behavioral RED), then the rules (GREEN).
+1. Blocklist oracle: RED at compile (no SMALL_ORDER_POINTS / is_small_order); GREEN on the first try,
+   which proves the 7 libsodium entries written from memory (X25519 of each, and of its high-bit
+   variant, is all zeros; a normal key is not flagged and gives a non-zero secret).
+2. create_job + submit_sealed: RED at compile (arity, submit_sealed, view fields); plumbing only, then
+   13 rule tests RED (4 client_pk validations, the k reserve, plain submit on a sealed job, 7
+   submit_sealed guards); GREEN after the checks and the reserve.
+3. request_ruling: profile view and helper first, then 3 outgoing-call tests RED (public input and
+   null secrets_ref still sent); GREEN after the sealed input and secrets_ref.
+4. on_ruling: RED at compile (is_valid_k, err/k fields); parsing plumbing only, then 5 money-path
+   tests RED (key_missing refunded, a pass without a valid k paid, k not stored or emitted); GREEN
+   after apply_verdict.
+
 ## Open issues
 
 - A payout to a deleted or nonexistent provider/client account bounces back to the escrow while the
@@ -220,14 +297,27 @@ mutation testing as the proof that the tests bite. This round was red-first thro
 - ft_on_transfer not implemented.
 The team lead accepted these for v1 (Nov 1).
 
-## Final state (Nov 2 2026)
+Sealed mode doubts (Nov 2):
+- The real OutLayer path for sealed jobs (secrets fetched by the worker, key_missing when the
+  profile is empty) is exercised only with the mock here; the request shape is asserted exactly.
+- The contract does not check that deliverable_ct is base64 or long enough to hold a nonce and tag;
+  the judge answers bad_delivery for those, which refunds the client (the provider's own mistake).
+- The sealed tests compile in the judge's vectors from judge-wasm/, a deliberate coupling: if the
+  judge's verdict format changes, the contract tests re-check it.
+- Callback gas, checked: the heaviest sealed callback (vector 5, a 21,884-character ciphertext,
+  a pass that stores k, job read from storage and written back) uses about 2 TGas of host-metered
+  gas out of the 40 TGas GAS_ON_RULING reserve. The unit VM does not meter wasm instructions, so
+  this is a lower bound, but the headroom is wide.
 
-- Unit tests: 71 pass. Sandbox integration tests: 7 pass (near-workspaces 0.24). 0 ignored.
-- Mutation testing: 51 planted, 51 caught (MUTATION-LOG.md).
-- Escrow wasm (path-safe build, see BUILD.md): 179461 bytes, sha256
-  a0130b87efe0c336ee33c80a39468efc639fe7ea21ad18b935b33260e51d3e4e (after the repository link was set
-  to judge-near), no local paths, byte-identical on a forced rebuild.
-- Mock wasm (tests only): 124020 bytes, sha256
-  415b75f2247116c8a4bb5e8614bd93e87fcdf2159510c52b7b3eeaec1ce26842.
-- Not deployed. Verified by the team lead (71 unit and 7 sandbox tests re-run, path-safe rebuild
-  reproduced) and committed Nov 2.
+## Final state (Nov 2 2026, sealed mode, not committed)
+
+- Unit tests: 112 pass (71 from v1 + 41 sealed). Sandbox integration tests: 13 pass (7 + 6 sealed).
+  0 ignored, no warnings.
+- Mutation testing: 79 planted, 79 caught (MUTATION-LOG.md), including 28 on the sealed paths.
+- Escrow wasm (path-safe build, see BUILD.md): 195834 bytes, sha256
+  b13cef3dd19730818f1db4ac85c135bfccf671eaca92315d853ed5f4f3b9f223, base58
+  Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga, no local paths, byte-identical on a forced rebuild.
+- Mock wasm (tests only): 128780 bytes, sha256
+  ca35736327808bb005c29368d4886c5a0ccd935926527ebf28dc9931db93e649.
+- Public-only v1 (committed as 9c432bf): 179461 bytes, sha256 a0130b87...
+- Not deployed, not committed.

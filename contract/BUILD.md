@@ -33,22 +33,32 @@ Checks run on the result: `strings` finds no absolute home-directory or source-c
 (registry paths read `/cargo/registry/...`), and a forced recompile with the same flags gives a
 byte-identical wasm.
 
-## Artifacts (Nov 2 2026)
+## Artifacts (Nov 2 2026, sealed mode)
 
 ### Escrow: judge_escrow.wasm (deployable)
 - Path: `contract/target/near/judge_escrow.wasm`
-- Size: 179461 bytes
-- SHA-256 hex: `a0130b87efe0c336ee33c80a39468efc639fe7ea21ad18b935b33260e51d3e4e`
-- SHA-256 base58 (NEAR code_hash form): `Bms5MtRN3kd9yy7QZ1T3tX2LDvQJ1KzSUn8QryYmT2Bw`
+- Size: 195834 bytes (the public-only v1 committed as 9c432bf was 179461 bytes, sha256 a0130b87...)
+- SHA-256 hex: `b13cef3dd19730818f1db4ac85c135bfccf671eaca92315d853ed5f4f3b9f223`
+- SHA-256 base58 (NEAR code_hash form): `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`
 - ABI: `contract/target/near/judge_escrow_abi.json` (also embedded)
 - NEP-330 source metadata embeds the `repository` link from Cargo.toml
   (`https://github.com/vijaygopalbalasa/judge-near`); changing that field changes the hash.
 
 ### Mock OutLayer: mock_outlayer.wasm (tests only, never deployed)
 - Path: `contract/mock-outlayer/target/near/mock_outlayer.wasm`
-- Size: 124020 bytes
-- SHA-256 hex: `415b75f2247116c8a4bb5e8614bd93e87fcdf2159510c52b7b3eeaec1ce26842`
-- SHA-256 base58: `5Q8PYXxjqrFB8Zd37rNTSRZcxnYXwDS76M6bPKhpyHDT`
+- Size: 128780 bytes
+- SHA-256 hex: `ca35736327808bb005c29368d4886c5a0ccd935926527ebf28dc9931db93e649`
+- SHA-256 base58: `EcLdNPB6atV4Qjn2sCQMhTrFM3XaGUrP3ZY7MFxWMQYx`
+
+## Dependencies
+
+- Contract: near-sdk 5.30 and hex 0.4. Sealed mode adds no dependency: k is decoded with the base64
+  crate near-sdk re-exports.
+- Dev only (never in the wasm): near-workspaces 0.24 ("unstable"), tokio, anyhow, serde_json, and
+  x25519-dalek 2, the oracle that proves the small-order blocklist bytes.
+- The sealed unit and sandbox tests read the judge's real vectors at compile time
+  (`include_str!("../../judge-wasm/vectors/sealed.json")`), so building the tests needs the
+  `judge-wasm/` directory next to `contract/`, as in this repository.
 
 ## Other commands
 
@@ -58,10 +68,11 @@ cd contract
 # Error-check (near-sdk 5.30 refuses a bare host `cargo check`)
 cargo check --lib --target wasm32-unknown-unknown
 
-# Unit tests (71)
+# Unit tests (112)
 cargo test --lib
 
-# Sandbox integration tests (7). near-workspaces downloads the sandbox binary on first run.
+# Sandbox integration tests (13, about 70 s). near-workspaces downloads the sandbox binary on
+# first run; each test process compiles the two wasms once and reuses them.
 cargo test --test integration -- --test-threads=1
 ```
 
