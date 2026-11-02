@@ -1,5 +1,5 @@
-# The README's test commands, on every push. The NEAR sandbox suite, the fuel check (needs wasmtime) and the
-# contract's reproducible build run locally (README, "Try it in two minutes").
+# The README's test commands, on every push, and both published builds rebuilt on macOS arm64 (where they were made)
+# and checked byte for byte. The fuel check (needs wasmtime) and the mutation runs stay local (README).
 name: tests
 on:
   push:
@@ -74,6 +74,54 @@ jobs:
       - name: contract unit tests
         working-directory: contract
         run: cargo test --lib --locked
+  contract-sandbox:
+    # The 13 sandbox tests deploy the escrow and a mock OutLayer on a local NEAR node. near-workspaces downloads the
+    # node (near-sandbox, about 29 MB) and builds both contracts with cargo-near 0.22.0.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          targets: wasm32-unknown-unknown
+      - name: cargo-near 0.22.0 (release binary, pinned SHA-256)
+        run: |
+          curl -LsSf -o cargo-near.tar.gz https://github.com/near/cargo-near/releases/download/cargo-near-v0.22.0/cargo-near-x86_64-unknown-linux-gnu.tar.gz
+          echo "9429064e30a427e96523f539cb255f3688d2345e5000d7d4e4873a8247247d1a  cargo-near.tar.gz" | sha256sum -c -
+          mkdir -p cargo-near-bin && tar xzf cargo-near.tar.gz -C cargo-near-bin
+          install -m 0755 "$(find cargo-near-bin -type f -name cargo-near | head -1)" "$HOME/.cargo/bin/cargo-near"
+          cargo near --version
+      - name: sandbox tests
+        working-directory: contract
+        run: cargo test --test integration --locked -- --test-threads=1
+  contract-build-macos:
+    # The deployed escrow was built on macOS on Apple silicon with cargo-near 0.22.0. This job rebuilds it with the
+    # path-safe command in contract/BUILD.md and checks the bytes against the SHA-256 BUILD.md publishes (the code
+    # hash NEAR reports for judgenear-escrow.testnet is the same hash in base58).
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          targets: wasm32-unknown-unknown
+      - name: cargo-near 0.22.0 (release binary, pinned SHA-256)
+        run: |
+          curl -LsSf -o cargo-near.tar.gz https://github.com/near/cargo-near/releases/download/cargo-near-v0.22.0/cargo-near-aarch64-apple-darwin.tar.gz
+          echo "55bd219c28c6996512a7c3836519f160b27b73a723f087634bf16f8a0bd48c8a  cargo-near.tar.gz" | shasum -a 256 -c -
+          mkdir -p cargo-near-bin && tar xzf cargo-near.tar.gz -C cargo-near-bin
+          install -m 0755 "$(find cargo-near-bin -type f -name cargo-near | head -1)" "$HOME/.cargo/bin/cargo-near"
+          cargo near --version
+      - name: the escrow build reproduces contract/BUILD.md
+        working-directory: contract
+        run: |
+          US=$'\x1f'
+          cargo near build non-reproducible-wasm \
+            --env "CARGO_ENCODED_RUSTFLAGS=-Clink-arg=-s${US}--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo${US}--remap-path-prefix=$PWD=/src"
+          want=$(grep -o 'SHA-256 hex: `[0-9a-f]\{64\}`' BUILD.md | head -1 | grep -o '[0-9a-f]\{64\}')
+          test -n "$want"
+          shasum -a 256 target/near/judge_escrow.wasm
+          echo "$want  target/near/judge_escrow.wasm" | shasum -a 256 -c -
   secrets:
     runs-on: ubuntu-latest
     steps:
