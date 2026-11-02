@@ -96,11 +96,11 @@ published build.
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
 | `node --test web/test/*.test.mjs` | 59 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
-| `cd contract && cargo test --lib` | 112 passed (the pinned rustc 1.99.1) |
+| `cd contract && cargo test --lib --locked` | 112 passed (the pinned rustc 1.99.1); building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed, about 5 minutes the first time and 1 to 2 after; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow; the first contract test run downloads the NEAR sandbox |
 | `cd agents && npm ci && npm test` | 79 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 | `python3 judge-wasm/scripts/mutate.py` | 56 of 56 planted bugs caught, one at a time (3 to 10 minutes) |
-| `python3 contract/scripts/mutate.py` | 78 of 78 planted bugs caught by the unit tests (15 to 30 minutes); the 79th, `#[private]` removed, is caught only by the sandbox suite and was checked by hand |
+| `python3 contract/scripts/mutate.py` | 78 of 78 planted bugs caught by the unit tests (10 to 30 minutes); the 79th, `#[private]` removed, is caught only by the sandbox suite (`on_ruling_is_private`), checked by planting it by hand |
 
 **4. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 
