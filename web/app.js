@@ -1,5 +1,6 @@
 // Page wiring for web/index.html. All checking logic lives in verify.js; reading the escrow in escrow.js.
 import { ESCROW, JOB_NOTES, RULINGS, discoverRulings, disclosedDelivery, formatNear, formatTime, jobOutcome, mergeRulings, parseDeepLink, readEscrow } from "./escrow.js";
+import { EXAMPLES } from "./examples.js";
 import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
@@ -214,6 +215,21 @@ $("tx-form").addEventListener("submit", (e) => {
   runCheck($("tx-go"), $("tx-summary"), $("tx-steps"), () => verifyTransaction($("tx").value.trim(), $("signer").value.trim(), options));
 });
 
+// Panel 3's examples fill both boxes and run the judge; editing either box drops the example's note.
+let activeExample = null;
+for (const ex of EXAMPLES) {
+  const button = el("button", "secondary", ex.label);
+  button.type = "button";
+  button.addEventListener("click", () => {
+    $("criteria").value = ex.criteria;
+    $("deliverable").value = ex.deliverable;
+    activeExample = ex;
+    $("run-form").requestSubmit();
+  });
+  $("examples").append(button);
+}
+for (const id of ["criteria", "deliverable"]) $(id).addEventListener("input", () => (activeExample = null));
+
 let judgeBytes;
 let judgeName;
 $("run-form").addEventListener("submit", async (e) => {
@@ -238,6 +254,7 @@ $("run-form").addEventListener("submit", async (e) => {
     summary.textContent = verdict.err
       ? `Not judged: ${verdict.err}`
       : `${verdict.pass ? "Pass" : "Fail"}: score ${verdict.score} of 100 (threshold ${verdict.th}), by ${judgeName}.`;
+    if (activeExample?.note) summary.append(el("span", "explain", activeExample.note));
     out.hidden = false;
     out.textContent = text;
   } catch (err) {

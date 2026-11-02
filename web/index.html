@@ -67,6 +67,8 @@
     p.hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
     .summary .explain { display: block; margin-top: 4px; font-weight: 400; font-size: 0.88rem; color: var(--muted); }
     a { color: var(--accent); }
+    .examples { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 6px; }
+    .examples button { margin-top: 0; padding: 7px 12px; font-size: 0.88rem; }
     figure.flow { margin: 0 0 20px; }
     figure.flow img { display: block; width: 100%; height: auto; border-radius: 12px; }
     figure.flow figcaption { color: var(--muted); font-size: 0.88rem; margin-top: 6px; }
@@ -117,6 +119,8 @@
   <section>
     <h2>3. Run the judge on your own job</h2>
     <form id="run-form">
+      <p class="hint">Try an example, or write your own criteria and delivery:</p>
+      <div class="examples" id="examples"></div>
       <label for="criteria">Criteria (JSON)</label>
       <textarea id="criteria" spellcheck="false">{"checks":[{"kind":"length","params":{"min":3,"max":40}}]}</textarea>
       <label for="deliverable">Deliverable</label>
