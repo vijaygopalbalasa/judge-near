@@ -92,6 +92,7 @@ const DRY_RUNS = [
   ["open", { as: CLIENT, job: "0" }, ["get_job"]],
   ["status", { job: "0" }, ["get_job"]],
   ["verify", { tx: "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", signer: PROVIDER }, ["G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", "re-run", "https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org", "JN_ARCHIVAL_RPC"]],
+  ["verify", { tx: "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", signer: PROVIDER, delivery: DELIVERABLE }, ["the delivery in", "SHA-256 against the job's dh", "no key"]],
 ];
 
 for (const [command, opts, expected] of DRY_RUNS) {
@@ -504,7 +505,7 @@ const OK_STEPS = [
 
 /** A fake verifier (web/verify.js's seam): records what verifyRuling receives. */
 function fakeVerifier(ruling, report = { ok: true, steps: OK_STEPS, local: { pass: true, score: 100 } }) {
-  const seen = { fetch: [], verify: [] };
+  const seen = { fetch: [], verify: [], delivery: [] };
   const verifier = {
     fetchTransaction: async (txHash, signer, o) => {
       seen.fetch.push({ txHash, signer, rpc: o.rpc });
@@ -514,6 +515,10 @@ function fakeVerifier(ruling, report = { ok: true, steps: OK_STEPS, local: { pas
     rulingJob: () => ({ escrow: ESCROW, jobId: 0 }),
     verifyRuling: async (_r, o) => {
       seen.verify.push({ env: o.env, signer: o.signer, rpc: o.rpc });
+      return report;
+    },
+    verifyWithDelivery: async (_r, text, o) => {
+      seen.delivery.push({ text, env: o.env, signer: o.signer, rpc: o.rpc });
       return report;
     },
   };
@@ -632,6 +637,43 @@ test("verify refuses a malformed transaction hash and a transaction with no OutL
   await assert.rejects(COMMANDS.verify({ tx: "not-a-hash", signer: PROVIDER }, deps), /--tx needs a transaction hash/);
   deps.verifier = fakeVerifier(null).verifier;
   await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /did not ask OutLayer to run anything/);
+});
+
+test("verify --delivery FILE checks a sealed ruling on its disclosed delivery: the file's text goes to the check, no key is loaded", async () => {
+  const home = tempHome();
+  const file = path.join(home, "delivery.txt");
+  fs.writeFileSync(file, "the disclosed report\n");
+  const steps = [OK_STEPS[0], { id: "match", ok: true, label: "The judge's verdict on the delivery equals the on-chain verdict: pass, score, threshold, ch, dh and checks", detail: "pass: true, score: 100" }];
+  const { verifier, seen } = fakeVerifier(sealedRulingOf(), { ok: true, steps, local: { pass: true, score: 100 } });
+  const { deps, lines } = makeDeps({ home, near: { view: offline }, fetch: offline });
+  deps.verifier = verifier;
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, delivery: file }, deps);
+  assert.equal(seen.verify.length, 0, "the key path does not run");
+  assert.equal(seen.delivery.length, 1);
+  assert.equal(seen.delivery[0].text, "the disclosed report\n");
+  assert.equal(seen.delivery[0].signer, PROVIDER);
+  assert.equal(seen.delivery[0].env, undefined, "no key goes to the delivery check");
+  assert.match(lines.join("\n"), /Verified: judge v2 \(public and sealed jobs\), commit fd3dcc6 computes exactly this ruling on the disclosed delivery \(pass: true, score: 100\)\./);
+  assert.ok(!fs.existsSync(path.join(home, ".judge-near")), "no secret is touched");
+});
+
+test("verify refuses --delivery with --as, an empty --delivery, and a delivery that is not UTF-8, before reading the chain", async () => {
+  const home = tempHome();
+  const good = path.join(home, "d.txt");
+  fs.writeFileSync(good, "x");
+  const bad = path.join(home, "bad.bin");
+  fs.writeFileSync(bad, Buffer.from([0xff, 0xfe, 0x00]));
+  for (const [opts, message] of [
+    [{ delivery: good, as: CLIENT }, /--delivery checks a sealed ruling without a key: leave out --as/],
+    [{ delivery: "" }, /--delivery needs a file/],
+    [{ delivery: bad }, /the delivery is not valid UTF-8/],
+  ]) {
+    const { verifier, seen } = fakeVerifier(sealedRulingOf());
+    const { deps } = makeDeps({ home, near: { view: offline }, fetch: offline });
+    deps.verifier = verifier;
+    await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER, ...opts }, deps), message);
+    assert.equal(seen.fetch.length + seen.verify.length + seen.delivery.length, 0, JSON.stringify(opts));
+  }
 });
 
 // ---- verify reads old transactions from archival nodes ----

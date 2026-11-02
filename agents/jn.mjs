@@ -19,7 +19,7 @@ const USAGE = `usage: node jn.mjs <command> [options]   (escrow from JN_ESCROW; 
   ruling        --as CLIENT_OR_PROVIDER --job N
   open          --as CLIENT --job N [--out file]
   status        --job N
-  verify        --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER]
+  verify        --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER | --delivery FILE]
   forget        --as PROVIDER --job N   (a settled sealed job) delete the key from OutLayer's vault
 
   --dry-run      print the exact call(s) and stop: no key is read, nothing is sent
@@ -28,8 +28,10 @@ const USAGE = `usage: node jn.mjs <command> [options]   (escrow from JN_ESCROW; 
 
   verify re-runs a ruling here with the browser verifier's code and prints each check. A sealed
   ruling needs the deliverable key: --as the job's client (after the key is released) or its
-  provider loads it from ~/.judge-near, in memory only. submit-sealed on a job that key_missing
-  sent back to Submitted stores the saved key again; then ask for a ruling again.
+  provider loads it from ~/.judge-near, in memory only. Or, once the delivery is disclosed,
+  --delivery FILE checks it with no key: its SHA-256 must be the job's dh, then the judge re-runs
+  on it. submit-sealed on a job that key_missing sent back to Submitted stores the saved key
+  again; then ask for a ruling again.
 
   verify reads the ruling from NEAR archival nodes (FastNEAR's, then NEAR's own), because regular
   testnet nodes drop transactions after about 30 hours; JN_ARCHIVAL_RPC names another node. Every
@@ -64,6 +66,7 @@ try {
       "deliver-anyway": { type: "boolean" },
       tx: { type: "string" },
       signer: { type: "string" },
+      delivery: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });

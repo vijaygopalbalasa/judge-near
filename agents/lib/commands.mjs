@@ -408,10 +408,12 @@ function showDetail(detail) {
   return text;
 }
 
-/** verify --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER]: the browser verifier's checks
- *  (web/verify.js) from the command line. A sealed ruling is re-run with the deliverable key,
+/** verify --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER | --delivery FILE]: the browser verifier's
+ *  checks (web/verify.js) from the command line. A sealed ruling is re-run with the deliverable key,
  *  loaded here and kept in memory: --as the job's client (once k is released) or its provider.
  *  The verifier hands the key only to a published judge build whose bytes it has just checked.
+ *  --delivery FILE checks a sealed ruling with no key, on a delivery the worker or client disclosed:
+ *  its SHA-256 must be the job's dh, then the judge is re-run on it (verifyWithDelivery).
  *  The ruling is read from archival nodes (JN_ARCHIVAL_RPC, else ARCHIVAL_RPC_URLS in order),
  *  never JN_RPC: regular testnet nodes drop transactions after about 30 hours. */
 export async function verify(opts, deps) {
@@ -419,6 +421,8 @@ export async function verify(opts, deps) {
   if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) throw new Error("--tx needs a transaction hash");
   const signer = accountArg(opts.signer, "--signer");
   const as = opts.as === undefined ? undefined : accountArg(opts.as, "--as");
+  const deliveryFile = opts.delivery;
+  if (deliveryFile !== undefined && as !== undefined) throw new Error("--delivery checks a sealed ruling without a key: leave out --as");
   const rpc = deps.env.JN_ARCHIVAL_RPC || cfg.ARCHIVAL_RPC_URLS;
   if (opts["dry-run"]) {
     deps.out(JSON.stringify({
@@ -427,15 +431,29 @@ export async function verify(opts, deps) {
         signer,
         archival_rpc: Array.isArray(rpc) ? [...rpc] : [rpc],
         then: "read the transaction from the first archival node above that has it (JN_ARCHIVAL_RPC names another), find the OutLayer run in it, download the wasm it ran, check its SHA-256 against the run and the published judge builds, re-run it here on the same input, compare the verdicts field by field"
-          + (as ? `; a sealed ruling is re-run with the deliverable key, loaded as ${as} and kept in memory` : ""),
+          + (as ? `; a sealed ruling is re-run with the deliverable key, loaded as ${as} and kept in memory` : "")
+          + (deliveryFile !== undefined ? `; for a sealed ruling, the delivery in ${deliveryFile} is checked instead: its SHA-256 against the job's dh, then the judge re-run on it and the job's criteria, no key` : ""),
       },
     }, null, 2));
     return { dryRun: true };
   }
+  const delivery = deliveryFile === undefined ? undefined : utf8Text(readFileArg(deliveryFile, "--delivery"), "the delivery", cfg.MAX_DELIVERABLE_BYTES);
   const v = deps.verifier ?? webVerify;
   const tx = await v.fetchTransaction(txHash, signer, { rpc, fetchImpl: deps.fetch });
   const ruling = v.findRuling(tx);
   if (!ruling) throw new Error(`transaction ${txHash} did not ask OutLayer to run anything`);
+  const mark = (ok) => (ok === true ? "ok  " : ok === null ? "skip" : "FAIL");
+  const print = (report) => {
+    for (const s of report.steps) deps.out(`${mark(s.ok)} ${s.label}${s.detail ? ` | ${showDetail(s.detail)}` : ""}`);
+    return webVerify.reportOutcome(report);
+  };
+  const publishedOf = (report) => report.steps.find((s) => s.id === "published")?.detail;
+  if (delivery !== undefined) {
+    const report = await v.verifyWithDelivery(ruling, delivery, { signer, tx, rpc, fetchImpl: deps.fetch });
+    if (print(report) !== "verified") throw new Error("not verified: see the check marked FAIL above");
+    deps.out(`Verified: ${publishedOf(report)} computes exactly this ruling on the disclosed delivery (pass: ${report.local.pass}, score: ${report.local.score}).`);
+    return { ok: true };
+  }
   const sealed = Boolean(ruling.secretsRef);
   const keyMissing = sealed && ruling.verdict?.err === "key_missing"; // the judge ran without a key
   const env = {};
@@ -459,16 +477,13 @@ export async function verify(opts, deps) {
     deps.out(`sealed ruling of job ${jobId}: re-running it with the deliverable key, loaded as ${as} and kept in memory`);
   }
   const report = await v.verifyRuling(ruling, { signer, tx, rpc, fetchImpl: deps.fetch, env });
-  const mark = (ok) => (ok === true ? "ok  " : ok === null ? "skip" : "FAIL");
-  for (const s of report.steps) deps.out(`${mark(s.ok)} ${s.label}${s.detail ? ` | ${showDetail(s.detail)}` : ""}`);
-  const outcome = webVerify.reportOutcome(report);
+  const outcome = print(report);
   if (outcome === "verified") {
-    const published = report.steps.find((s) => s.id === "published")?.detail;
-    deps.out(`Verified: ${published} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`);
+    deps.out(`Verified: ${publishedOf(report)} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`);
     return { ok: true };
   }
   if (sealed && !keyMissing && as === undefined) {
-    deps.out("This ruling is sealed: add --as <client> (after the key is released) or --as <provider> to re-run it with the deliverable key.");
+    deps.out("This ruling is sealed: add --as <client> (after the key is released) or --as <provider> to re-run it with the deliverable key, or --delivery FILE if the delivery was disclosed.");
   }
   if (outcome === "needs-key") throw new Error("not re-run: the deliverable key is needed; the checks above need none");
   throw new Error("not verified: see the check marked FAIL above");

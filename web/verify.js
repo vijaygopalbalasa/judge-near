@@ -318,6 +318,57 @@ async function checkWithoutKey(input, verdict, step) {
   step("eh", eh === verdict.eh, "The evidence hash eh recomputes from the on-chain verdict", eh);
 }
 
+/** A report builder: step(id, ok, label, detail) records one check and returns ok; done() closes the report. */
+function reporter() {
+  const steps = [];
+  const step = (id, ok, label, detail = "") => {
+    steps.push({ id, ok, label, detail });
+    return ok;
+  };
+  const done = (extra = {}) => ({ ok: steps.every((s) => s.ok === true), steps, ...extra });
+  return { step, done };
+}
+
+/**
+ * The checks every ruling starts with: who asked, which job, which judge, that a verdict came back, and the
+ * judge's input (from OutLayer's log, or rebuilt from the escrow job). Returns the input, or undefined after
+ * a check failed.
+ */
+async function rulingInput(ruling, { signer, job, tx, rpc, fetchImpl }, step) {
+  if (signer !== undefined && !step("signer", ruling.signer === signer, "OutLayer recorded the request for the account you entered", `recorded signer: ${ruling.signer}`)) return undefined;
+  if (job !== undefined) {
+    const where = tx ? rulingJob(tx, ruling) : { error: "no transaction to read the job from" };
+    const same = !where.error && where.escrow === job.escrow && where.jobId === job.jobId;
+    const detail = where.error ?? `the transaction asks for job ${where.jobId} of ${where.escrow}`;
+    if (!step("job", same, `The ruling was asked for job ${job.jobId} of ${job.escrow}`, detail)) return undefined;
+  }
+  if (!step("source", Boolean(ruling.source), "The request names a wasm by URL and SHA-256", ruling.source ? ruling.source.url : "no WasmUrl source in the request")) return undefined;
+  const published = PUBLISHED_JUDGES.get(ruling.source.hash);
+  if (!step("published", Boolean(published), "That hash is a published Judge on NEAR build", published ?? `unknown hash ${ruling.source.hash}: not a Judge on NEAR ruling`)) return undefined;
+  if (!step("result", Boolean(ruling.verdict), "OutLayer returned a verdict on chain", ruling.verdict ? "" : `returned: ${ruling.verdictText ?? "nothing"}`)) return undefined;
+  if (ruling.inputInState) {
+    const rebuilt = tx ? await inputFromEscrow(tx, ruling, { rpc, fetchImpl }) : { error: "no transaction to read the escrow job from" };
+    const label = "The judge's input, rebuilt from the escrow job (OutLayer kept it in its own state)";
+    if (!step("input", Boolean(rebuilt.input), label, rebuilt.input ? `escrow ${rebuilt.escrow}, job ${rebuilt.jobId}` : rebuilt.error)) return undefined;
+    return rebuilt.input;
+  }
+  if (!step("input", ruling.input !== null && ruling.input !== undefined, "The judge's input is in OutLayer's request log")) return undefined;
+  return ruling.input;
+}
+
+/** The judge build OutLayer ran: the bytes given, or downloaded from its URL, checked against its hash. */
+async function judgeBytes(ruling, wasmBytes, fetchImpl, step) {
+  let bytes = wasmBytes;
+  if (!bytes) {
+    const res = await fetchImpl(ruling.source.url);
+    if (!step("download", res.ok, "Downloaded the judge from the URL OutLayer ran", `HTTP ${res.status}`)) return undefined;
+    bytes = new Uint8Array(await res.arrayBuffer());
+  }
+  const hash = await sha256Hex(bytes);
+  if (!step("hash", hash === ruling.source.hash, "Its SHA-256 equals the hash OutLayer was told to run", hash)) return undefined;
+  return bytes;
+}
+
 /**
  * Check one ruling. `wasmBytes` is optional: when absent it is downloaded from the URL OutLayer ran.
  * `job` ({escrow, jobId}, optional) also checks that the transaction's request_ruling call names
@@ -326,33 +377,9 @@ async function checkWithoutKey(input, verdict, step) {
  * none, a last step with ok null (not done), and needsKey: true.
  */
 export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, job, runner = runJudge, fetchImpl = globalThis.fetch, tx, rpc = TESTNET_ARCHIVAL_RPCS } = {}) {
-  const steps = [];
-  const step = (id, ok, label, detail = "") => {
-    steps.push({ id, ok, label, detail });
-    return ok;
-  };
-  const done = (extra = {}) => ({ ok: steps.every((s) => s.ok === true), steps, ...extra });
-
-  if (signer !== undefined && !step("signer", ruling.signer === signer, "OutLayer recorded the request for the account you entered", `recorded signer: ${ruling.signer}`)) return done();
-  if (job !== undefined) {
-    const where = tx ? rulingJob(tx, ruling) : { error: "no transaction to read the job from" };
-    const same = !where.error && where.escrow === job.escrow && where.jobId === job.jobId;
-    const detail = where.error ?? `the transaction asks for job ${where.jobId} of ${where.escrow}`;
-    if (!step("job", same, `The ruling was asked for job ${job.jobId} of ${job.escrow}`, detail)) return done();
-  }
-  if (!step("source", Boolean(ruling.source), "The request names a wasm by URL and SHA-256", ruling.source ? ruling.source.url : "no WasmUrl source in the request")) return done();
-  const published = PUBLISHED_JUDGES.get(ruling.source.hash);
-  if (!step("published", Boolean(published), "That hash is a published Judge on NEAR build", published ?? `unknown hash ${ruling.source.hash}: not a Judge on NEAR ruling`)) return done();
-  if (!step("result", Boolean(ruling.verdict), "OutLayer returned a verdict on chain", ruling.verdict ? "" : `returned: ${ruling.verdictText ?? "nothing"}`)) return done();
-  let input = ruling.input;
-  if (ruling.inputInState) {
-    const rebuilt = tx ? await inputFromEscrow(tx, ruling, { rpc, fetchImpl }) : { error: "no transaction to read the escrow job from" };
-    const label = "The judge's input, rebuilt from the escrow job (OutLayer kept it in its own state)";
-    if (!step("input", Boolean(rebuilt.input), label, rebuilt.input ? `escrow ${rebuilt.escrow}, job ${rebuilt.jobId}` : rebuilt.error)) return done();
-    input = rebuilt.input;
-  } else if (!step("input", input !== null && input !== undefined, "The judge's input is in OutLayer's request log")) {
-    return done();
-  }
+  const { step, done } = reporter();
+  const input = await rulingInput(ruling, { signer, job, tx, rpc, fetchImpl }, step);
+  if (input === undefined) return done();
   // key_missing means OutLayer ran the judge with no key; re-run it the same way, ignoring any key given.
   const keyMissing = Boolean(ruling.secretsRef) && ruling.verdict.err === "key_missing";
   if (keyMissing) {
@@ -363,14 +390,8 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, job, r
     return done({ needsKey: true });
   }
 
-  let bytes = wasmBytes;
-  if (!bytes) {
-    const res = await fetchImpl(ruling.source.url);
-    if (!step("download", res.ok, "Downloaded the judge from the URL OutLayer ran", `HTTP ${res.status}`)) return done();
-    bytes = new Uint8Array(await res.arrayBuffer());
-  }
-  const hash = await sha256Hex(bytes);
-  if (!step("hash", hash === ruling.source.hash, "Its SHA-256 equals the hash OutLayer was told to run", hash)) return done();
+  const bytes = await judgeBytes(ruling, wasmBytes, fetchImpl, step);
+  if (!bytes) return done();
 
   // The key only ever goes to a published judge build whose bytes were just checked.
   const localText = await runner(bytes, input, ruling.secretsRef && !keyMissing ? env : {});
@@ -396,6 +417,56 @@ export function reportOutcome(report) {
   const last = steps.at(-1);
   const checked = steps.slice(0, -1).every((s) => s.ok === true);
   return report.needsKey === true && last.id === "key" && last.ok === null && checked ? "needs-key" : "failed";
+}
+
+/** Errors a sealed judge returns before it opens the delivery: a disclosed delivery cannot re-check those. */
+const UNOPENED = new Set(["key_missing", "bad_delivery", "invalid_input"]);
+
+/** A verdict without k and eh: k seals the key to the client, so a re-run on the plain delivery has neither. */
+const withoutKey = ({ k, eh, ...rest }) => canonicalPrefix(rest);
+
+/**
+ * Check a sealed ruling on its disclosed delivery, with no key: once the worker or the client publishes the
+ * plain delivery, anyone can confirm it is the one the worker committed to (its SHA-256 is the on-chain dh) and
+ * re-run the published judge on it and the job's criteria. The sealed judge scores the opened delivery with the
+ * same code as a public job (judge-wasm/src/sealed.rs), so every verdict field but k and eh must match. A ruling
+ * the judge returned before opening the delivery (key_missing, bad_delivery, invalid_input) cannot be checked
+ * this way and is refused. Takes the options of verifyRuling, less env.
+ */
+export async function verifyWithDelivery(ruling, delivery, { wasmBytes, signer, job, runner = runJudge, fetchImpl = globalThis.fetch, tx, rpc = TESTNET_ARCHIVAL_RPCS } = {}) {
+  const { step, done } = reporter();
+  const input = await rulingInput(ruling, { signer, job, tx, rpc, fetchImpl }, step);
+  if (input === undefined) return done();
+  if (!step("sealed", Boolean(ruling.secretsRef), "The ruling is for a sealed job", ruling.secretsRef ? "" : "a public job's delivery is already in the judge's input: check it without one")) return done();
+  await checkWithoutKey(input, ruling.verdict, step);
+  const err = ruling.verdict.err;
+  const opened = !UNOPENED.has(err);
+  const why = `The judge never opened the delivery (${err}), so a disclosed delivery cannot re-check this ruling`;
+  if (!step("opened", opened, opened ? "The judge opened the delivery and ruled on it" : why, opened ? "" : "check it without a delivery")) return done();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    parsed = null;
+  }
+  const text = typeof delivery === "string" ? delivery : null;
+  const dh = text === null ? "" : await sha256Hex(new TextEncoder().encode(text));
+  const committed = typeof parsed?.dh === "string" ? parsed.dh : "";
+  const detail = text === null ? "the delivery must be text" : `its SHA-256 is ${dh}; the commitment is ${committed || "missing"}`;
+  if (!step("delivery", text !== null && dh === committed, "The delivery is the one the worker committed to: its SHA-256 is the on-chain dh", detail)) return done();
+
+  const bytes = await judgeBytes(ruling, wasmBytes, fetchImpl, step);
+  if (!bytes) return done();
+
+  // A plain judge input: no key and no ciphertext, so nothing secret reaches the judge.
+  const localText = await runner(bytes, JSON.stringify({ criteria: parsed.criteria, deliverable: text }), {});
+  const local = JSON.parse(localText);
+  step("rerun", true, "Re-ran the judge here on the delivery and the job's criteria", localText);
+  const same = withoutKey(local) === withoutKey(ruling.verdict);
+  const label = "The judge's verdict on the delivery equals the on-chain verdict: pass, score, threshold, ch, dh and checks";
+  step("match", same, label, same ? `pass: ${local.pass}, score: ${local.score}` : `here: ${localText.trim()}; on chain: ${ruling.verdictText}`);
+  return done({ local, onchain: ruling.verdict });
 }
 
 /** Fetch a transaction and verify the ruling in it. */

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rpcCall, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction } from "../verify.js";
+import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rpcCall, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction, verifyWithDelivery } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -490,4 +490,59 @@ test("summarizeTx reads what OutLayer did: refused with its message, or ran with
   assert.deepEqual(summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [] }).outlayer, []);
   const forged = summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "fake-outlayer.testnet", logs: [ev({ success: false, error_message: "Access denied by access condition" })], status: { SuccessValue: "" } } }] });
   assert.deepEqual(forged.outlayer, [], "only OutLayer's own receipts count; any contract can log a look-alike event");
+});
+
+// ---- a sealed ruling re-run on its disclosed delivery: no key needed once the plain delivery is known ----
+
+test("a sealed ruling re-runs in full on its disclosed delivery: dh binds it, and pass, score and checks match", async () => {
+  const pass = sealedVectors.find((x) => x.expected.includes('"k":'));
+  const plain = Buffer.from(pass.plaintext_b64, "base64").toString("utf8");
+  const report = await verifyWithDelivery(sealedRuling(pass), plain, { wasmBytes: judge });
+  assert.equal(report.ok, true, JSON.stringify(report.steps.filter((s) => s.ok !== true)));
+  assert.equal(reportOutcome(report), "verified");
+  assert.deepEqual(report.steps.map((s) => s.id).slice(-4), ["delivery", "hash", "rerun", "match"]);
+  assert.match(report.steps.find((s) => s.id === "match").label, /pass, score, threshold, ch, dh and checks/);
+});
+
+test("a delivery that does not hash to dh is refused before anything runs, and a changed verdict does not match", async () => {
+  const pass = sealedVectors.find((x) => x.expected.includes('"k":'));
+  let ran = 0;
+  const runner = async (b, i) => {
+    ran++;
+    return runJudge(b, i);
+  };
+  const plain = Buffer.from(pass.plaintext_b64, "base64").toString("utf8");
+  const wrong = await verifyWithDelivery(sealedRuling(pass), `${plain} `, { wasmBytes: judge, runner });
+  assert.equal(reportOutcome(wrong), "failed");
+  assert.equal(wrong.steps.at(-1).id, "delivery");
+  assert.equal(ran, 0);
+  const r = sealedRuling(pass);
+  const forged = { ...r, verdict: { ...r.verdict, score: 7 } };
+  const changed = await verifyWithDelivery(forged, plain, { wasmBytes: judge });
+  assert.equal(reportOutcome(changed), "failed");
+  assert.equal(changed.steps.find((s) => s.id === "match").ok, false);
+  const pub = await verifyWithDelivery(findRuling(tx), "anything", { wasmBytes: judgeV1 });
+  assert.equal(reportOutcome(pub), "failed", "only sealed rulings take a disclosed delivery");
+});
+
+test("every sealed vector the judge opened re-checks on its plaintext; rulings that never opened the delivery are refused, not failed", async () => {
+  // The escrow caps criteria at 4096 bytes and deliverable_ct at 21884 (contract/src/lib.rs), so a ciphertext the
+  // judge refused for its size never reaches it on chain; those two vectors are left out.
+  const onChainPossible = sealedVectors.filter((v) => !/deliverable_ct of 21885|oversized C/.test(v.name));
+  let opened = 0;
+  for (const v of onChainPossible) {
+    const plain = Buffer.from(v.plaintext_b64, "base64").toString("utf8");
+    const err = JSON.parse(v.expected).err;
+    const report = await verifyWithDelivery(sealedRuling(v), plain, { wasmBytes: judge });
+    if (["key_missing", "bad_delivery", "invalid_input"].includes(err)) {
+      assert.equal(reportOutcome(report), "failed", v.name);
+      const last = report.steps.at(-1);
+      assert.equal(last.id, "opened", v.name);
+      assert.match(last.label, /never opened the delivery/, v.name);
+    } else {
+      opened++;
+      assert.equal(reportOutcome(report), "verified", `${v.name}: ${JSON.stringify(report.steps.filter((s) => s.ok !== true))}`);
+    }
+  }
+  assert.equal(opened, 16, "10 passes, 2 scored fails, 2 invalid_criteria, too_large after decrypt, criteria of 4097 bytes");
 });
