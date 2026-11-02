@@ -127,12 +127,10 @@ export function findRuling(tx) {
 }
 
 /**
- * OutLayer keeps an input of 10,000 bytes or more in its own state instead of its request log, and
- * removes it once the run settles. Rebuild that input from the escrow job the ruling was asked for:
- * the transaction's request_ruling call names the job, and the escrow's get_job view holds the exact
- * strings it sent. A wrong rebuild cannot pass: the re-run's ch and dh would not match the verdict.
+ * The escrow and job a ruling was asked for, from the transaction's request_ruling call to the
+ * contract that asked OutLayer. Returns {escrow, jobId} or {error}.
  */
-export async function inputFromEscrow(tx, ruling, { rpc = TESTNET_RPC, fetchImpl = globalThis.fetch } = {}) {
+export function rulingJob(tx, ruling) {
   const call = (tx?.transaction?.actions ?? []).map((a) => a?.FunctionCall).find((f) => f?.method_name === "request_ruling");
   if (!call || tx.transaction.receiver_id !== ruling.caller) {
     return { error: "the transaction is not a request_ruling call to the contract that asked OutLayer" };
@@ -144,6 +142,19 @@ export async function inputFromEscrow(tx, ruling, { rpc = TESTNET_RPC, fetchImpl
     jobId = undefined;
   }
   if (!Number.isSafeInteger(jobId) || jobId < 0) return { error: "could not read the job id from the request_ruling call" };
+  return { escrow: ruling.caller, jobId };
+}
+
+/**
+ * OutLayer keeps an input of 10,000 bytes or more in its own state instead of its request log, and
+ * removes it once the run settles. Rebuild that input from the escrow job the ruling was asked for:
+ * the transaction's request_ruling call names the job, and the escrow's get_job view holds the exact
+ * strings it sent. A wrong rebuild cannot pass: the re-run's ch and dh would not match the verdict.
+ */
+export async function inputFromEscrow(tx, ruling, { rpc = TESTNET_RPC, fetchImpl = globalThis.fetch } = {}) {
+  const where = rulingJob(tx, ruling);
+  if (where.error) return where;
+  const { jobId } = where;
   const res = await fetchImpl(rpc, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -211,7 +222,11 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner
   } else if (!step("input", input !== null && input !== undefined, "The judge's input is in OutLayer's request log")) {
     return done();
   }
-  if (ruling.secretsRef && !env.JN_KEY) {
+  // key_missing means OutLayer ran the judge with no key; re-run it the same way, ignoring any key given.
+  const keyMissing = Boolean(ruling.secretsRef) && ruling.verdict.err === "key_missing";
+  if (keyMissing) {
+    step("key", true, "Sealed job ruled key_missing: OutLayer ran the judge without a key, so it is re-run without one");
+  } else if (ruling.secretsRef && !env.JN_KEY) {
     step("key", false, "Sealed job: the deliverable key is needed to re-run it", "only the client (after opening k) or the provider holds it");
     return done();
   }
@@ -226,7 +241,7 @@ export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner
   if (!step("hash", hash === ruling.source.hash, "Its SHA-256 equals the hash OutLayer was told to run", hash)) return done();
 
   // The key only ever goes to a published judge build whose bytes were just checked.
-  const localText = await runner(bytes, input, ruling.secretsRef ? env : {});
+  const localText = await runner(bytes, input, ruling.secretsRef && !keyMissing ? env : {});
   const local = JSON.parse(localText);
   step("rerun", true, "Re-ran the judge here on the same input", localText);
 

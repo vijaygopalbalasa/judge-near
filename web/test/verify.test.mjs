@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, canonicalPrefix, expectedEh, findRuling, runJudge, sha256Hex, verifyRuling } from "../verify.js";
+import { PUBLISHED_JUDGES, canonicalPrefix, expectedEh, findRuling, rulingJob, runJudge, sha256Hex, verifyRuling } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -235,4 +235,42 @@ test("a sealed input kept in OutLayer's state is rebuilt with the sealed fields 
   const report = await verifyRuling(ruling, { wasmBytes: judge, env: { JN_KEY: v.test_jn_key }, tx: minimalTx, fetchImpl: rpc });
   assert.equal(report.ok, true, JSON.stringify(report.steps.filter((s) => !s.ok)));
   assert.equal(report.steps.find((s) => s.id === "input").detail, "escrow escrow.testnet, job 3");
+});
+
+test("a sealed key_missing ruling re-runs without a key, as OutLayer ran it, even when a key is supplied", async () => {
+  const v = sealedVectors.find((x) => JSON.parse(x.expected).err === "key_missing");
+  assert.ok(v, "the sealed vectors include a key_missing verdict");
+  const pass = sealedVectors.find((x) => x.expected.includes('"k":'));
+  for (const env of [{}, { JN_KEY: pass.test_jn_key }]) {
+    const seen = [];
+    const runner = (bytes, input, e) => {
+      seen.push(e);
+      return runJudge(bytes, input, e);
+    };
+    const report = await verifyRuling(sealedRuling(v), { wasmBytes: judge, env, runner });
+    assert.equal(report.ok, true, JSON.stringify(report.steps.filter((s) => !s.ok)));
+    assert.deepEqual(seen, [{}], "the judge is re-run with no key at all");
+    const key = report.steps.find((s) => s.id === "key");
+    assert.equal(key.ok, true);
+    assert.match(key.label, /without a key/);
+    assert.equal(report.local.err, "key_missing");
+  }
+});
+
+test("a sealed ruling that is not key_missing still needs the key", async () => {
+  const v = sealedVectors.find((x) => x.expected.includes('"k":'));
+  const report = await verifyRuling(sealedRuling(v), { wasmBytes: judge });
+  assert.equal(report.ok, false);
+  assert.equal(report.steps.at(-1).id, "key");
+  assert.equal(report.steps.at(-1).ok, false);
+});
+
+test("rulingJob reads the escrow and job from the request_ruling call, and only from the contract that asked OutLayer", () => {
+  const ruling = { caller: "escrow.testnet" };
+  const call = (receiver, args) => ({ transaction: { receiver_id: receiver, actions: [{ FunctionCall: { method_name: "request_ruling", args: btoa(args) } }] } });
+  assert.deepEqual(rulingJob(call("escrow.testnet", '{"job_id":4}'), ruling), { escrow: "escrow.testnet", jobId: 4 });
+  assert.match(rulingJob(call("other.testnet", '{"job_id":4}'), ruling).error, /not a request_ruling call to the contract that asked OutLayer/);
+  assert.match(rulingJob(call("escrow.testnet", '{"job_id":-1}'), ruling).error, /could not read the job id/);
+  assert.match(rulingJob(call("escrow.testnet", "not json"), ruling).error, /could not read the job id/);
+  assert.match(rulingJob({ transaction: { receiver_id: "escrow.testnet", actions: [] } }, ruling).error, /not a request_ruling call/);
 });
