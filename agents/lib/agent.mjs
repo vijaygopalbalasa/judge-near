@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { nearToYocto } from "near-api-js";
 import { formatNear } from "../../web/escrow.js";
 import { runJudge } from "../../web/verify.js";
 import { COMMANDS } from "./commands.mjs";
@@ -18,6 +19,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = 10;
 const POLL_MS = 5_000;
 const SETTLED = new Set(["Completed", "Refunded"]);
+const MIN_AMOUNT_NEAR = "0.1";
+
+/** Text from the chain or from another party, made safe for a terminal: control characters other than newline and tab are shown as \xNN. */
+export function printable(text) {
+  return String(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
+const say = (deps, text) => deps.out(printable(text));
+
+let judgeBytes;
+/** The published judge (judge-wasm/release/judge.wasm), run here on a plain report: the same checks OutLayer runs on the decrypted delivery. */
+async function judgeHere(criteria, deliverable) {
+  judgeBytes ??= new Uint8Array(fs.readFileSync(path.join(HERE, "..", "..", "judge-wasm", "release", "judge.wasm")));
+  return JSON.parse(await runJudge(judgeBytes, JSON.stringify({ criteria, deliverable })));
+}
+const failedChecks = (verdict) => (verdict.checks ?? []).filter((c) => !c.ok).map((c) => `${c.id} failed`).join(", ");
 
 const minutes = (ms) => (Math.round(ms / 60_000) === 1 ? "1 minute" : `${Math.round(ms / 60_000)} minutes`);
 
@@ -46,19 +62,34 @@ function readTask(file) {
   return fs.readFileSync(file, "utf8");
 }
 
-/** Fill one job's fields, deliver them sealed, ask for the ruling. Returns what happened. */
-async function workOn(job, jobs, { escrow, me }, deps) {
+/** Price, skill, then the judge run here: only then deliver sealed and ask for the ruling. Returns what happened. */
+async function workOn(job, jobs, { escrow, me, minYocto, deliverAnyway }, deps) {
+  if (BigInt(job.amount) < minYocto) {
+    say(deps, `job ${job.id}: pays ${formatNear(job.amount)}, below this worker's minimum of ${formatNear(minYocto.toString())}; not delivering, nothing signed`);
+    return { jobId: job.id, declined: "below the minimum price" };
+  }
   let report;
   try {
     report = deliverableFor(job.criteria, escrowFacts({ escrow, jobId: job.id, jobs, now: deps.now() }));
   } catch (e) {
-    deps.out(`job ${job.id}: skipped (${e.message}); nothing signed`);
+    say(deps, `job ${job.id}: skipped (${e.message}); nothing signed`);
     return { jobId: job.id, skipped: e.message };
   }
   const fields = Object.keys(JSON.parse(report.text)).length;
   const total = fields + report.missing.length;
-  deps.out(`job ${job.id}: funded by ${job.client} with ${formatNear(job.amount)}; delivering ${fields} of the ${total} fields its criteria require, sealed`
+  say(deps, `job ${job.id}: funded by ${job.client} with ${formatNear(job.amount)}; ${fields} of the ${total} fields its criteria require are ready`
     + (report.missing.length ? `; no fact for ${report.missing.join(", ")}, so it is left out` : ""));
+  // Delivering costs the worker a vault deposit, storage and gas: check the report with the judge first.
+  const local = await judgeHere(job.criteria, report.text);
+  if (!local.pass) {
+    const why = `the judge, run here, would fail this report (score ${local.score}${failedChecks(local) ? `: ${failedChecks(local)}` : ""})`;
+    if (!deliverAnyway) {
+      say(deps, `job ${job.id}: ${why}; not delivering, nothing signed`);
+      return { jobId: job.id, declined: "the judge would fail it", verdict: local, missing: report.missing };
+    }
+    say(deps, `job ${job.id}: ${why}; delivering it anyway (--deliver-anyway)`);
+  }
+  say(deps, `job ${job.id}: delivering the report sealed`);
 
   // submit-sealed reads the delivery from a file: a private directory, removed right after.
   const dir = fs.mkdtempSync(path.join(deps.tmpdir ?? os.tmpdir(), "jn-worker-"));
@@ -72,36 +103,40 @@ async function workOn(job, jobs, { escrow, me }, deps) {
   const ruling = await COMMANDS.ruling({ as: me, job: String(job.id) }, deps);
   const v = ruling.verdict;
   if (ruling.pending || !v) {
-    deps.out(`job ${job.id}: no verdict yet; ruling tx ${ruling.txHash}`);
+    say(deps, `job ${job.id}: no verdict yet; ruling tx ${ruling.txHash}`);
   } else {
-    deps.out(`job ${job.id}: the judge ${v.pass ? "passed" : "failed"} it (score ${v.score}); ${v.pass ? "the escrow pays the worker and releases the key to the client" : "the client is refunded and the delivery stays sealed"}; ruling tx ${ruling.txHash}`);
+    say(deps, `job ${job.id}: the judge ${v.pass ? "passed" : "failed"} it (score ${v.score}); ${v.pass ? "the escrow pays the worker and releases the key to the client" : "the client is refunded and the delivery stays sealed"}; ruling tx ${ruling.txHash}`);
   }
   return { jobId: job.id, rulingTx: ruling.txHash, verdict: v, missing: report.missing };
 }
 
-/** worker --as WORKER [--once]: deliver every funded sealed job that names WORKER. */
+/** worker --as WORKER [--once] [--min-amount 0.1] [--deliver-anyway]: deliver every funded sealed job that names WORKER, pays at least the minimum, and passes the judge run here. */
 export async function runWorker(opts, deps) {
   const escrow = escrowOf(deps);
   const me = account(opts.as, "--as");
+  const minAmount = String(opts.minAmount ?? MIN_AMOUNT_NEAR);
+  if (!/^\d+(\.\d+)?$/.test(minAmount)) throw new Error("--min-amount needs a NEAR amount");
+  const minYocto = BigInt(nearToYocto(minAmount).toString());
+  const deliverAnyway = Boolean(opts.deliverAnyway);
   const pollMs = opts.pollMs ?? POLL_MS;
   const waitMs = opts.waitMs ?? 30 * 60_000;
   const handled = new Set();
   const results = [];
   let idleSince = deps.now();
-  deps.out(`worker ${me}: watching ${escrow} for funded sealed jobs that name ${me}`);
+  say(deps, `worker ${me}: watching ${escrow} for funded sealed jobs that name ${me} and pay at least ${formatNear(minYocto.toString())}`);
   for (;;) {
     let jobs;
     try {
       jobs = await listJobs(escrow, deps);
     } catch (e) {
-      deps.out(`reading the escrow failed (${e.message}); trying again in ${pollMs / 1000} s`);
+      say(deps, `reading the escrow failed (${e.message}); trying again in ${pollMs / 1000} s`);
       await deps.sleep(pollMs);
       continue;
     }
     const job = jobs.find((j) => j.provider === me && j.sealed && j.state === "Funded" && !handled.has(j.id));
     if (job) {
       handled.add(job.id);
-      const result = await workOn(job, jobs, { escrow, me }, deps);
+      const result = await workOn(job, jobs, { escrow, me, minYocto, deliverAnyway }, deps);
       if (opts.once) return result;
       results.push(result);
       idleSince = deps.now();
@@ -123,11 +158,11 @@ export async function runClient(opts, deps) {
   const pollMs = opts.pollMs ?? POLL_MS;
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
   readTask(opts.task);
-  deps.out(`client ${me}: posting a sealed job for ${provider} with the criteria in ${path.basename(opts.task)}`);
+  say(deps, `client ${me}: posting a sealed job for ${provider} with the criteria in ${path.basename(opts.task)}`);
   const { jobId } = await COMMANDS.create({ as: me, provider, criteria: opts.task, "expires-in": opts.expiresIn ?? "2h", sealed: true }, deps);
   if (!Number.isSafeInteger(jobId)) throw new Error("create_job returned no job id");
   await COMMANDS.fund({ as: me, job: String(jobId), amount: opts.amount ?? "0.5" }, deps);
-  deps.out(`job ${jobId}: waiting for ${provider} to deliver and for the judge`);
+  say(deps, `job ${jobId}: waiting for ${provider} to deliver and for the judge`);
   const started = deps.now();
   let state;
   for (;;) {
@@ -135,26 +170,26 @@ export async function runClient(opts, deps) {
     try {
       job = await deps.near.view(escrow, "get_job", { job_id: jobId });
     } catch (e) {
-      deps.out(`reading job ${jobId} failed (${e.message}); trying again in ${pollMs / 1000} s`);
+      say(deps, `reading job ${jobId} failed (${e.message}); trying again in ${pollMs / 1000} s`);
       await deps.sleep(pollMs);
       continue;
     }
     if (job?.state !== state) {
       state = job?.state;
-      deps.out(`job ${jobId}: ${state}`);
+      say(deps, `job ${jobId}: ${state}`);
     }
     if (SETTLED.has(state)) break;
     if (deps.now() - started >= timeoutMs) throw new Error(`job ${jobId} is still ${state} after ${minutes(timeoutMs)}; check later with: node jn.mjs status --job ${jobId}`);
     await deps.sleep(pollMs);
   }
   if (state === "Refunded") {
-    deps.out(`job ${jobId}: refunded; the key was never released, so the delivery stays sealed`);
+    say(deps, `job ${jobId}: refunded; the key was never released, so the delivery stays sealed`);
     return { jobId, state };
   }
   const out = path.join(opts.outDir ?? ".", `job-${jobId}-deliverable.txt`);
   await COMMANDS.open({ as: me, job: String(jobId), out }, deps);
-  deps.out(`job ${jobId}: the judge passed it and the key was released; the delivery, opened:`);
-  deps.out(fs.readFileSync(out, "utf8"));
+  say(deps, `job ${jobId}: the judge passed it and the key was released; the delivery, opened:`);
+  say(deps, fs.readFileSync(out, "utf8"));
   return { jobId, state, out };
 }
 
@@ -164,12 +199,11 @@ export async function preview(opts, deps) {
   const criteria = readTask(opts.task);
   const jobs = await listJobs(escrow, deps);
   const { text, missing } = deliverableFor(criteria, escrowFacts({ escrow, jobId: jobs.length, jobs, now: deps.now() }));
-  deps.out(`preview: ${jobs.length} jobs on ${escrow}; the report for job ${jobs.length} (reads only, signs nothing):`);
-  if (missing.length) deps.out(`no fact for ${missing.join(", ")}, so it is left out`);
-  deps.out(text);
-  const judge = new Uint8Array(fs.readFileSync(path.join(HERE, "..", "..", "judge-wasm", "release", "judge.wasm")));
-  const verdict = JSON.parse(await runJudge(judge, JSON.stringify({ criteria, deliverable: text })));
+  say(deps, `preview: ${jobs.length} jobs on ${escrow}; the report for job ${jobs.length} (reads only, signs nothing):`);
+  if (missing.length) say(deps, `no fact for ${missing.join(", ")}, so it is left out`);
+  say(deps, text);
+  const verdict = await judgeHere(criteria, text);
   const checks = (verdict.checks ?? []).map((c) => `${c.id} ${c.ok ? "ok" : "failed"}`).join(", ");
-  deps.out(`the judge, run here: ${verdict.pass ? "pass" : "fail"}, score ${verdict.score}${checks ? ` (${checks})` : ""}`);
+  say(deps, `the judge, run here: ${verdict.pass ? "pass" : "fail"}, score ${verdict.score}${checks ? ` (${checks})` : ""}`);
   return { text, missing, verdict };
 }

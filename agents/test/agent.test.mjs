@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { publicFromSecret } from "../../judge-wasm/scripts/sealed.mjs";
 import { runJudge } from "../../web/verify.js";
 import { preview, runClient, runWorker } from "../lib/agent.mjs";
+import { COMMANDS } from "../lib/commands.mjs";
 import { PUBLISHED_ESCROW_CODE_HASH } from "../lib/config.mjs";
 import { eciesDecrypt, secretsProfile } from "../lib/keystore.mjs";
 import { deliverableFor, escrowFacts } from "../lib/skill.mjs";
@@ -233,7 +234,7 @@ function flakyReads(near, failures) {
   };
 }
 
-async function runBoth(task, existing, { flaky = false } = {}) {
+async function runBoth(task, existing, { flaky = false, workerOpts = {} } = {}) {
   const chain = fakeChain(existing);
   const clock = fakeClock();
   const home = tempHome();
@@ -247,7 +248,7 @@ async function runBoth(task, existing, { flaky = false } = {}) {
     client.deps.near = flakyReads(chain.near, { get_job: 2 });
   }
   const [w, c] = await Promise.all([
-    runWorker({ as: WORKER, once: true }, worker.deps),
+    runWorker({ as: WORKER, once: true, ...workerOpts }, worker.deps),
     runClient({ as: CLIENT, provider: WORKER, task, amount: "0.5", expiresIn: "2h", outDir }, client.deps),
   ]);
   return { chain, worker, client, w, c, tmpdir, outDir };
@@ -290,8 +291,8 @@ test("two agents, no human: the client posts and funds a sealed job, the worker 
   assert.deepEqual(fs.readdirSync(tmpdir), [], "the worker removes its plaintext file");
 });
 
-test("the fail run: the client requires a field the worker cannot supply; the judge fails it, the client is refunded and the key is never released", async () => {
-  const { chain, worker, client, w, c, outDir } = await runBoth(FAIL_FILE, []);
+test("the fail run (--deliver-anyway): the client requires a field the worker cannot supply; the judge fails it, the client is refunded and the key is never released", async () => {
+  const { chain, worker, client, w, c, outDir } = await runBoth(FAIL_FILE, [], { workerOpts: { deliverAnyway: true } });
   assert.equal(c.state, "Refunded");
   assert.equal(w.verdict.pass, false);
   assert.deepEqual(w.missing, ["mainnet_tvl_usd"]);
@@ -299,7 +300,9 @@ test("the fail run: the client requires a field the worker cannot supply; the ju
   assert.equal(chain.jobs[0].k, null);
   assert.deepEqual(fs.readdirSync(outDir), [], "nothing is opened");
   assert.match(client.lines.join("\n"), /job 0: refunded; the key was never released, so the delivery stays sealed/);
-  assert.match(worker.lines.join("\n"), /no fact for mainnet_tvl_usd, so it is left out/);
+  const workerText = worker.lines.join("\n");
+  assert.match(workerText, /no fact for mainnet_tvl_usd, so it is left out/);
+  assert.match(workerText, /the judge, run here, would fail this report \(score 50: schema#0 failed\); delivering it anyway \(--deliver-anyway\)/);
 });
 
 test("the worker skips a funded job it cannot do, and signs nothing for it", async () => {
@@ -342,6 +345,8 @@ test("agent.mjs: --help lists the three roles; an unknown role or a missing opti
   assert.equal(help.status, 0);
   for (const role of ["worker", "client", "preview"]) assert.match(help.stdout, new RegExp(`^  ${role} `, "m"));
   assert.match(help.stdout, /signs nothing/);
+  assert.match(help.stdout, /--deliver-anyway/);
+  assert.match(help.stdout, /--min-amount 0\.1/);
   const unknown = run("dance");
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /unknown role: dance/);
@@ -356,4 +361,57 @@ test("a failed read while polling is retried on the next tick; it does not stop 
   assert.equal(w.verdict.pass, true);
   assert.match(worker.lines.join("\n"), /reading the escrow failed \(HTTP 429\); trying again in 5 s/);
   assert.match(client.lines.join("\n"), /reading job 0 failed \(HTTP 429\); trying again in 5 s/);
+});
+
+const REAL_CLIENT_PK = publicFromSecret(Buffer.alloc(32, 7)).toString("hex");
+
+test("by default the worker runs the judge on its report first, and does not deliver one the judge would fail", async () => {
+  const chain = fakeChain([jobView({ state: "Funded", criteria: FAIL_TASK, client_pk: REAL_CLIENT_PK })]);
+  const { deps, lines } = roleDeps("worker", { home: tempHome(), chain, clock: fakeClock(), tmpdir: tempDir("jn-agent-work-") });
+  const result = await runWorker({ as: WORKER, once: true }, deps);
+  assert.equal(result.jobId, 0);
+  assert.match(result.declined, /the judge would fail it/);
+  assert.equal(result.verdict.score, 50);
+  assert.deepEqual(chain.calls, [], "nothing signed, so nothing spent");
+  assert.match(lines.join("\n"), /job 0: the judge, run here, would fail this report \(score 50: schema#0 failed\); not delivering, nothing signed/);
+});
+
+test("the worker does not work for less than its minimum price (0.1 NEAR unless --min-amount says otherwise)", async () => {
+  const cheap = jobView({ state: "Funded", criteria: PASS_TASK, amount: "10000000000000000000000", client_pk: REAL_CLIENT_PK }); // 0.01 NEAR
+  const chain = fakeChain([cheap]);
+  const { deps, lines } = roleDeps("worker", { home: tempHome(), chain, clock: fakeClock(), tmpdir: tempDir("jn-agent-work-") });
+  const result = await runWorker({ as: WORKER, once: true }, deps);
+  assert.match(result.declined, /below the minimum price/);
+  assert.deepEqual(chain.calls, []);
+  assert.match(lines.join("\n"), /job 0: pays 0\.01 NEAR, below this worker's minimum of 0\.1 NEAR; not delivering, nothing signed/);
+  const willing = fakeChain([cheap]);
+  const w2 = roleDeps("worker-2", { home: tempHome(), chain: willing, clock: fakeClock(), tmpdir: tempDir("jn-agent-work-") });
+  const taken = await runWorker({ as: WORKER, once: true, minAmount: "0.01" }, w2.deps);
+  assert.equal(taken.verdict.pass, true);
+});
+
+test("the client shows control characters in an opened delivery as visible codes, never raw; the file keeps the exact bytes", async () => {
+  const chain = fakeChain([]);
+  const clock = fakeClock();
+  const home = tempHome();
+  const tmpdir = tempDir("jn-agent-work-");
+  const outDir = tempDir("jn-agent-out-");
+  const taskFile = path.join(tempDir("jn-agent-task-"), "any-text.json");
+  fs.writeFileSync(taskFile, '{"checks":[{"kind":"length","params":{"max":200,"unit":"chars"}}]}');
+  const hostile = "report\u001b[2J\u001b]0;owned\u0007\rdone\n";
+  const evil = roleDeps("evil", { home, chain, clock, tmpdir });
+  const client = roleDeps("client", { home, chain, clock, tmpdir });
+  const evilWorker = async () => {
+    while (chain.jobs[0]?.state !== "Funded") await clock.sleep(5_000);
+    const file = path.join(tmpdir, "hostile.txt");
+    fs.writeFileSync(file, hostile);
+    await COMMANDS["submit-sealed"]({ as: WORKER, job: "0", file }, evil.deps);
+    await COMMANDS.ruling({ as: WORKER, job: "0" }, evil.deps);
+  };
+  const [, c] = await Promise.all([evilWorker(), runClient({ as: CLIENT, provider: WORKER, task: taskFile, amount: "0.5", expiresIn: "2h", outDir }, client.deps)]);
+  assert.equal(c.state, "Completed");
+  const text = client.lines.join("\n");
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text), "no raw control character reaches the terminal");
+  assert.ok(text.includes("report\\x1b[2J\\x1b]0;owned\\x07\\x0ddone"), text);
+  assert.equal(fs.readFileSync(c.out, "utf8"), hostile);
 });

@@ -18,7 +18,7 @@ test("the ruling list is the README's escrow table, row for row, with the signer
     const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
     return { job: Number.parseInt(cells[0], 10), tx: /txns\/([1-9A-HJ-NP-Za-km-z]{43,44})\)/.exec(cells.at(-1))[1] };
   });
-  assert.equal(fromReadme.length, 6);
+  assert.equal(fromReadme.length, 8);
   assert.deepEqual(RULINGS.map(({ job, tx }) => ({ job, tx })), fromReadme);
   const prose = section.replace(/\s+/g, " ");
   assert.ok(prose.includes("Signers: jobs 1 and 3 were signed by `judgenear-client.testnet`, the others by `judgenear-worker.testnet`."));

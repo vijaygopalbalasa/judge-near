@@ -12,10 +12,12 @@ import { createNear } from "./lib/near.mjs";
 
 const USAGE = `usage: node agent.mjs <role> [options]   (escrow from JN_ESCROW; testnet)
 
-  worker   --as WORKER [--once]
-           watches the escrow for funded sealed jobs that name WORKER, fills the fields their
-           criteria require from facts it reads on chain, delivers the report sealed and asks
-           for the ruling (--once: one job, then exit)
+  worker   --as WORKER [--once] [--min-amount 0.1] [--deliver-anyway]
+           watches the escrow for funded sealed jobs that name WORKER and pay at least
+           --min-amount NEAR, fills the fields their criteria require from facts it reads on
+           chain, runs the judge on the report here, and only if it passes delivers it sealed
+           and asks for the ruling (--deliver-anyway: deliver a failing report too, to show a
+           failing delivery; --once: one job, then exit)
   client   --as CLIENT --provider WORKER --task tasks/escrow-report.json [--amount 0.5] [--expires-in 2h] [--out-dir .]
            posts a sealed job with these criteria, funds it, waits for the ruling, and opens
            the delivery if it passed
@@ -42,6 +44,8 @@ try {
       "expires-in": { type: "string" },
       "out-dir": { type: "string" },
       once: { type: "boolean" },
+      "min-amount": { type: "string" },
+      "deliver-anyway": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -79,6 +83,8 @@ const opts = {
   expiresIn: values["expires-in"],
   outDir: values["out-dir"],
   once: Boolean(values.once),
+  minAmount: values["min-amount"],
+  deliverAnyway: Boolean(values["deliver-anyway"]),
 };
 
 try {

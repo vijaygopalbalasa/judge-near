@@ -109,6 +109,36 @@ node jn.mjs status --job <N>
 releases `k`, and `open` writes the delivery. `examples/deliverable-fail.txt` fails them
 (it never names USDC), so the client is refunded and nothing is opened.
 
+## Two agents, no human
+
+`agent.mjs` runs a client and a worker as two processes that share nothing but the chain.
+
+```sh
+node agent.mjs worker --as <worker> --once
+node agent.mjs client --as <client> --provider <worker> --task tasks/escrow-report.json --amount 0.5 --out-dir .
+```
+
+The client posts a sealed job with the criteria in the task file, funds it, waits for the
+escrow to settle, and opens the delivery if it passed. The worker watches the escrow for
+funded sealed jobs that name it and pay at least `--min-amount` (0.1 NEAR by default), fills
+the fields the criteria's schema check requires from facts it reads on chain
+(`lib/skill.mjs`: the escrow's job counts and what it has paid, at its clock), and runs the
+judge on its report here. Only a report that passes is delivered sealed with `submit-sealed`,
+followed by the ruling: a delivery costs the worker a vault deposit, storage and gas, so it
+does not pay for one the judge would fail. The skill is a plain program, not a language
+model, and it never invents a field it has no fact for: `tasks/escrow-report-with-tvl.json`
+also requires `mainnet_tvl_usd`, which it leaves out, so the worker declines that job, or,
+with `--deliver-anyway`, delivers it and the judge fails it on chain. The worker never prints
+its report; the client shows it only after opening it, with any terminal control characters
+shown as visible codes.
+
+To see what the worker would deliver for the next job, with the judge's verdict on it, run
+here (reads the chain, signs nothing, no NEAR account needed):
+
+```sh
+node agent.mjs preview --task tasks/escrow-report.json
+```
+
 ## Tests
 
 ```sh
@@ -116,13 +146,17 @@ npm test
 ```
 
 They run offline: a fake chain and keystore stand in for the network, and each test uses a
-temporary home folder. One test runs the real judge (`../judge-wasm/release/judge.wasm`)
-under wasmtime when it is installed.
+temporary home folder. `test/agent.test.mjs` runs both agents at once against a fake escrow
+and OutLayer that run the real judge through `../web/verify.js`. One test in
+`test/cli.test.mjs` runs the real judge (`../judge-wasm/release/judge.wasm`) under wasmtime
+when it is installed.
 
 ## Run live
 
 Every path above ran on testnet on Nov 2 2026 against `judgenear-escrow.testnet`: a public
 pass and fail, a sealed pass (opened by the client) and fail, a `key_missing` ruling, and its
-recovery with `submit-sealed`. The transactions are in the main README. One limit: the key was
+recovery with `submit-sealed`. The two agents ran jobs 5 (pass, opened by the client) and 6
+(fail, refunded); job 6's worker delivered without checking first, as `--deliver-anyway` does
+now. The transactions are in the main README. One limit: the key was
 stored again live only for a job whose vault profile had never been created (job 4); storing
 over a key the vault already holds was not run live.

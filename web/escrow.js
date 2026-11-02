@@ -24,6 +24,8 @@ export const RULINGS = Object.freeze([
   { job: 3, tx: "3sCPetXoYFwuoyStnKmjZHiLnh1rBQW9nKNyGvyfCAib", signer: "judgenear-client.testnet" },
   { job: 4, tx: "J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3", signer: "judgenear-worker.testnet" },
   { job: 4, tx: "5G6jQja3xjvw6tnzkmpE3P86Sracs5PFStJJP38o4a2J", signer: "judgenear-worker.testnet" },
+  { job: 5, tx: "5E4FiCfc1CQ7ywUeEDZ9jVMpkronjaCH4oNWWqM8hN71", signer: "judgenear-worker.testnet" },
+  { job: 6, tx: "7rjHmFL8w9keTZVf1ybXVawxGTQibVdpkJxEWa2xCn7r", signer: "judgenear-worker.testnet" },
 ].map((r) => Object.freeze(r)));
 
 const PAGE_SIZE = 10;
