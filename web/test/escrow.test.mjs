@@ -21,7 +21,7 @@ test("the ruling list is the README's escrow table, row for row, with the signer
     assert.ok(m, `the ruling cell links to the page: ${cells.at(-1)}`);
     return { job: Number.parseInt(cells[0], 10), tx: m[1], signer: m[2] };
   });
-  assert.equal(fromReadme.length, 8);
+  assert.equal(fromReadme.length, 10);
   assert.deepEqual(RULINGS.map(({ job, tx, signer }) => ({ job, tx, signer })), fromReadme);
   assert.ok(!/nearblocks\.io\/txns/.test(readme), "no links to the testnet explorer, which stopped indexing on Sep 27 2026");
   const prose = section.replace(/\s+/g, " ");

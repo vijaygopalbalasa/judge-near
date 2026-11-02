@@ -123,7 +123,8 @@ escrow to settle, and opens the delivery if it passed. The worker watches the es
 funded sealed jobs that name it and pay at least `--min-amount` (0.1 NEAR by default), fills
 the fields the criteria's schema check requires from facts it reads on chain
 (`lib/skill.mjs`: the escrow's job counts and what it has paid, at its clock), and runs the
-judge on its report here. Only a report that passes is delivered sealed with `submit-sealed`,
+judge on its report here. Every report ends with a random 128-bit nonce, so its public `dh`
+cannot be guessed. Only a report that passes is delivered sealed with `submit-sealed`,
 followed by the ruling: a delivery costs the worker a vault deposit, storage and gas, so it
 does not pay for one the judge would fail. The skill is a plain program, not a language
 model, and it never invents a field it has no fact for: `tasks/escrow-report-with-tvl.json`
@@ -155,8 +156,10 @@ when it is installed.
 
 Every path above ran on testnet on Nov 2 2026 against `judgenear-escrow.testnet`: a public
 pass and fail, a sealed pass (opened by the client) and fail, a `key_missing` ruling, and its
-recovery with `submit-sealed`. The two agents ran jobs 5 (pass, opened by the client) and 6
-(fail, refunded); job 6's worker delivered without checking first, as `--deliver-anyway` does
-now. The transactions are in the main README. One limit: the key was
+recovery with `submit-sealed`. The two agents ran jobs 5 and 7 (pass, opened by the client) and
+6 and 8 (fail, refunded). Jobs 5 and 6 came from the first worker, without a nonce or a check
+before delivering; jobs 7 and 8 from the current one, job 8 with `--deliver-anyway`.
+`../tools/vault-probe.mjs` asked OutLayer directly for job 5's key, as the worker and as the
+client; OutLayer refused both. The transactions are in the main README. One limit: the key was
 stored again live only for a job whose vault profile had never been created (job 4); storing
 over a key the vault already holds was not run live.
