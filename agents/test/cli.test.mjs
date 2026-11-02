@@ -2,7 +2,7 @@
 // printed. Runs offline: a fake chain and a fake keystore stand in for the network, and
 // HOME is a fresh temporary directory holding a FAKE NEAR key.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -31,9 +31,16 @@ const JUDGE_HASH = fs.readFileSync(path.join(ROOT, "judge-wasm", "release", "jud
 const HEX64 = /^[0-9a-f]{64}$/;
 const sha256hex = (b) => crypto.createHash("sha256").update(b).digest("hex");
 
+// Every temporary folder a test makes is removed when the file's tests end.
+const made = [];
+after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 /** A temporary HOME with a fake NEAR key for each test account. */
 function tempHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "jn-test-"));
+  made.push(home);
   const dir = path.join(home, ".near-credentials", "testnet");
   fs.mkdirSync(dir, { recursive: true });
   for (const account of [CLIENT, PROVIDER]) {

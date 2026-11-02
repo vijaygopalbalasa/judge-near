@@ -1,0 +1,57 @@
+# The README's test commands, on every push. The NEAR sandbox suite, the fuel check (needs wasmtime) and the
+# contract's reproducible build run locally (README, "Try it in two minutes").
+name: tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  web-and-agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: web verifier tests
+        run: node --test web/test/*.test.mjs
+      - name: agents tests
+        working-directory: agents
+        run: npm ci && npm test
+  judge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          targets: wasm32-wasip1
+      - name: judge tests
+        working-directory: judge-wasm
+        run: cargo test --locked
+      - name: the judge build reproduces judge-wasm/release/judge.wasm.sha256
+        working-directory: judge-wasm
+        run: |
+          CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
+            cargo build --release --locked --target wasm32-wasip1
+          echo "$(cut -d' ' -f1 release/judge.wasm.sha256)  target/wasm32-wasip1/release/judge.wasm" | sha256sum -c -
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: contract unit tests
+        working-directory: contract
+        run: cargo test --lib --locked
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

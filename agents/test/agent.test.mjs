@@ -2,7 +2,7 @@
 // read on chain) and the client and worker roles running a sealed job with no human input.
 // Runs offline: the real judge runs here through web/verify.js's WASI host.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -95,8 +95,16 @@ const FAKE_NEAR_KEY = "ed25519:FAKEtestKeyNotReal7Qm2Wx9Zk4Lp8Rv3Ty6Ub1Nc5Hd0Gj"
 const b64 = (s) => Buffer.from(s).toString("base64");
 const sha256hex = (x) => crypto.createHash("sha256").update(x).digest("hex");
 
+// Every temporary folder a test makes is removed when the file's tests end.
+const made = [];
+after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tempDir(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  made.push(dir);
+  return dir;
 }
 
 /** A temporary HOME with a fake NEAR key for both accounts. */
