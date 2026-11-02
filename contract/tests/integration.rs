@@ -3,7 +3,8 @@
 //! These exercise the real cross-contract path: request_ruling calls the mock's request_execution,
 //! the mock returns configured RAW bytes, and the escrow's on_ruling callback acts on them. The mock
 //! returns its value directly (no yield), which is invisible to on_ruling since it only reads
-//! promise_result(0).
+//! promise_result(0), except in hold mode, where it parks a yield like the real OutLayer and the
+//! job stays in Ruling until the test resolves it (late_ruling_cannot_be_refunded_while_it_runs).
 //!
 //! near-workspaces downloads a NEAR sandbox binary on first run (it did here on Nov 1 2026). The
 //! wasm for both contracts is built on the fly with compile_project (near-workspaces "unstable"),
@@ -562,5 +563,125 @@ async fn small_order_client_pk_refused() -> anyhow::Result<()> {
         .await?;
     let err = format!("{:?}", outcome.into_result().unwrap_err());
     assert!(err.contains("small-order"), "expected a small-order refusal, got: {err}");
+    Ok(())
+}
+
+/// How far the sandbox clock moves per fast-forwarded block (ns), measured over 100 blocks.
+async fn block_time(worker: &Sandbox) -> anyhow::Result<u64> {
+    let t0 = worker.view_block().await?.timestamp();
+    worker.fast_forward(100).await?;
+    let t1 = worker.view_block().await?.timestamp();
+    Ok(((t1 - t0) / 100).max(1))
+}
+
+/// Fast-forward until the sandbox clock reaches `target` (ns), in steps sized from the measured block
+/// time (starting from `step`) so it does not overshoot by more than a block or two. Returns the
+/// clock it stopped at.
+async fn advance_to(worker: &Sandbox, target: u64, step: u64) -> anyhow::Result<u64> {
+    let mut now = worker.view_block().await?.timestamp();
+    let mut per_block = step.max(1);
+    while now < target {
+        let blocks = ((target - now) / per_block).clamp(1, 5_000);
+        worker.fast_forward(blocks).await?;
+        let after = worker.view_block().await?.timestamp();
+        per_block = ((after - now) / blocks).max(1);
+        now = after;
+    }
+    Ok(now)
+}
+
+#[tokio::test]
+async fn late_ruling_cannot_be_refunded_while_it_runs() -> anyhow::Result<()> {
+    // The attack escrow v2 allowed, end to end: the client asks for a ruling at the end of the grace
+    // window, takes the refund once the window closes, and still reads k from OutLayer's result. The
+    // mock holds the ruling open across blocks, as OutLayer's yield does.
+    let (worker, escrow, mock, client, provider, _ranger) = setup().await?;
+    let ts = worker.view_block().await?.timestamp();
+    let expires = ts + 5_000_000_000; // about 5 s ahead
+    create_and_fund(&escrow, &client, &provider, expires, NearToken::from_near(5)).await?;
+    submit_deliverable(&escrow, &provider).await?;
+    // Job 1, delivered on time like job 0, shows the other rule: no ruling starts once the window ends.
+    client
+        .call(escrow.id(), "create_job")
+        .args_json(json!({ "provider": provider.id(), "criteria": CRITERIA, "expires_at_ns": expires.to_string() }))
+        .deposit(NearToken::from_near(1))
+        .transact()
+        .await?
+        .into_result()?;
+    client.call(escrow.id(), "fund").args_json(json!({ "job_id": 1 })).deposit(NearToken::from_near(5)).transact().await?.into_result()?;
+    provider
+        .call(escrow.id(), "submit")
+        .args_json(json!({ "job_id": 1, "deliverable": DELIVERABLE }))
+        .deposit(NearToken::from_near(1))
+        .transact()
+        .await?
+        .into_result()?;
+    set_verdict(&escrow, &mock, true).await?;
+    mock.call("set_hold").args_json(json!({ "value": true })).transact().await?.into_result()?;
+
+    // Inside the grace window, the client asks for job 0's ruling; the mock holds it open. Distances
+    // are counted in blocks, because the yield times out after 200 of them.
+    let window_end = expires + GRACE_NS;
+    let step = block_time(&worker).await?;
+    let now = advance_to(&worker, window_end - 40 * step, step).await?;
+    assert!(now < window_end - 15 * step, "overshot the grace window; the test would not exercise it");
+    let pending = client
+        .call(escrow.id(), "request_ruling")
+        .args_json(json!({ "job_id": 0 }))
+        .deposit(NearToken::from_millinear(50))
+        .gas(Gas::from_tgas(300))
+        .transact_async()
+        .await?;
+    for _ in 0..60 {
+        if mock.view("get_call_count").await?.json::<u64>()? == 1 {
+            break;
+        }
+        worker.fast_forward(1).await?;
+    }
+    assert_eq!(mock.view("get_call_count").await?.json::<u64>()?, 1, "the ruling never reached the mock");
+    assert_eq!(job_state(&escrow).await?["state"], "Ruling");
+
+    // The window closes while the ruling still runs (well inside the yield's 200 blocks).
+    let height = worker.view_block().await?.height();
+    let now = advance_to(&worker, window_end + 2 * step, step).await?;
+    assert!(now >= window_end, "not past the grace window yet");
+    assert!(worker.view_block().await?.height() - height < 100, "too close to the yield's 200-block timeout");
+
+    // The refund is refused while the ruling runs ...
+    let refund = client
+        .call(escrow.id(), "claim_refund")
+        .args_json(json!({ "job_id": 0 }))
+        .gas(Gas::from_tgas(60))
+        .transact()
+        .await?;
+    let err = format!("{:?}", refund.into_result().unwrap_err());
+    assert!(err.contains("not refundable"), "expected the refund to be refused, got: {err}");
+    assert_eq!(job_state(&escrow).await?["state"], "Ruling");
+    // ... no new ruling can start on a job past its window ...
+    let late = provider
+        .call(escrow.id(), "request_ruling")
+        .args_json(json!({ "job_id": 1 }))
+        .deposit(NearToken::from_millinear(50))
+        .gas(Gas::from_tgas(300))
+        .transact()
+        .await?;
+    let err = format!("{:?}", late.into_result().unwrap_err());
+    assert!(err.contains("grace window is over"), "expected a late ruling to be refused, got: {err}");
+
+    // ... and when the ruling lands, the escrow pays the provider, in the transaction that asked for it.
+    worker.fast_forward(3).await?; // let the provider's refused call settle before reading its balance
+    let before = provider.view_account().await?.balance;
+    mock.call("resolve").transact().await?.into_result()?;
+    let landed = pending.await?;
+    let logs = landed.logs().join("\n");
+    landed.into_result()?;
+    assert!(
+        logs.contains("\"event\":\"completed\"") && logs.contains(&format!("\"to\":\"{}\"", provider.id())),
+        "expected the escrow's completed event paying the provider, got: {logs}"
+    );
+    assert_eq!(job_state(&escrow).await?["state"], "Completed");
+    worker.fast_forward(3).await?;
+    let gained = provider.view_account().await?.balance.as_yoctonear().saturating_sub(before.as_yoctonear());
+    assert_eq!(gained, NearToken::from_near(5).as_yoctonear(), "the provider gets the whole 5 NEAR");
     Ok(())
 }

@@ -9,8 +9,16 @@
 //! The mock also records the last call's input_data, secrets_ref and payer so a test can assert the
 //! escrow sent the shape we expect, and it can be told to panic to exercise the escrow's
 //! PromiseResult::Failed branch.
+//!
+//! In hold mode it behaves like the real OutLayer: request_execution parks a yield promise and the
+//! escrow's callback waits, across blocks, until the test calls resolve() (or the yield times out
+//! after 200 blocks). That keeps a job in Ruling while other calls land, which a test of the refund
+//! rules needs.
 
-use near_sdk::{AccountId, PanicOnDefault, env, near};
+use near_sdk::{AccountId, Gas, GasWeight, PanicOnDefault, env, near};
+
+/// Register the yield's data id is written to.
+const YIELD_REGISTER: u64 = 0;
 
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
@@ -26,6 +34,10 @@ pub struct MockOutlayer {
     last_payer: Option<AccountId>,
     last_deposit: near_sdk::json_types::U128,
     call_count: u64,
+    /// When true, request_execution parks a yield promise instead of answering at once.
+    hold: bool,
+    /// The data id of the parked yield, until resolve() resumes it.
+    held: Option<Vec<u8>>,
 }
 
 #[near]
@@ -40,6 +52,29 @@ impl MockOutlayer {
             last_payer: None,
             last_deposit: near_sdk::json_types::U128(0),
             call_count: 0,
+            hold: false,
+            held: None,
+        }
+    }
+
+    /// Hold the next rulings open (a parked yield) until resolve() is called.
+    pub fn set_hold(&mut self, value: bool) {
+        self.hold = value;
+    }
+
+    /// Resume the parked yield with the configured response bytes.
+    pub fn resolve(&mut self) {
+        let id = self.held.take().expect("mock outlayer: nothing is held");
+        let id: [u8; 32] = id.try_into().expect("mock outlayer: a data id is 32 bytes");
+        assert!(env::promise_yield_resume(&id, &self.response), "mock outlayer: the yield is gone");
+    }
+
+    /// The parked yield's callback: returns what resolve() passed, or null after a timeout.
+    #[private]
+    pub fn on_resolved(&mut self) {
+        match env::promise_result_checked(0, 4096) {
+            Ok(bytes) => env::value_return(&bytes),
+            Err(_) => env::value_return(b"null"),
         }
     }
 
@@ -80,6 +115,12 @@ impl MockOutlayer {
         self.last_deposit = near_sdk::json_types::U128(env::attached_deposit().as_yoctonear());
         if self.should_panic {
             env::panic_str("mock outlayer: forced failure");
+        }
+        if self.hold {
+            let index = env::promise_yield_create("on_resolved", [], Gas::from_tgas(10), GasWeight(0), YIELD_REGISTER);
+            self.held = Some(env::read_register(YIELD_REGISTER).expect("mock outlayer: no data id"));
+            env::promise_return(index);
+            return;
         }
         env::value_return(&self.response);
     }

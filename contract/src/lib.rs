@@ -41,9 +41,14 @@ const K_VERSION_BYTE: u8 = 0x01;
 /// unpaid.
 const K_STORAGE_RESERVE_BYTES: u64 = 4 + K_B64_LEN as u64;
 
-/// One hour in nanoseconds. A job stuck in Ruling can be refunded only after expiry plus this
-/// grace, so a lost OutLayer callback can never lock the escrow forever.
+/// One hour in nanoseconds. A Submitted job can be refunded only after expiry plus this grace, so
+/// delivered work always gets a chance at a ruling after expiry.
 const GRACE_NS: u64 = 3_600_000_000_000;
+
+/// One day in nanoseconds, far longer than an OutLayer run can take (its yield times out within
+/// minutes). A job in Ruling can be refunded only this long after the grace window ends, when no
+/// ruling can still be running, so a lost callback can never lock the escrow forever.
+const RULING_STALE_NS: u64 = 86_400_000_000_000;
 
 /// Static gas floor for the OutLayer request_execution call. OutLayer reserves MIN_RESPONSE_GAS
 /// (50 TGas) for its own settlement callback and needs a little more for its body; 100 TGas covers
@@ -432,6 +437,10 @@ impl Contract {
     /// refund on a failing delivery), so restricting the caller loses nothing, while it stops a third
     /// party from spamming failing requests to stall a job. If neither party ever asks, money still
     /// cannot lock: claim_refund opens at expires_at + GRACE_NS for a Submitted job.
+    ///
+    /// No ruling may start from expires_at + GRACE_NS on, when the job becomes refundable: a ruling
+    /// still running then could publish k (the key sealed to the client) in OutLayer's result after
+    /// the client took the refund, handing over the work for nothing.
     #[payable]
     pub fn request_ruling(&mut self, job_id: u64) -> Promise {
         require!(
@@ -457,6 +466,10 @@ impl Contract {
                 "only the job's client or provider can request a ruling"
             );
             require!(job.state == JobState::Submitted, "job is not Submitted");
+            require!(
+                env::block_timestamp() < job.expires_at_ns.saturating_add(GRACE_NS),
+                "the grace window is over: this job can now only be refunded"
+            );
             job.attempt += 1;
             job.state = JobState::Ruling;
             attempt = job.attempt;
@@ -570,16 +583,25 @@ impl Contract {
     /// Refund the client. Anyone may call; the money always goes to the client.
     ///
     /// - Funded (nothing delivered): refundable at expires_at.
-    /// - Submitted or Ruling (work delivered on time): refundable only at expires_at + GRACE_NS. The
-    ///   grace window guarantees delivered work a chance at a real ruling after expiry, so a party
-    ///   cannot stall rulings (for example with failing requests) and then refund at expires_at. It
-    ///   also covers a lost OutLayer callback, so money can never lock.
+    /// - Submitted (work delivered on time): refundable at expires_at + GRACE_NS. The grace window
+    ///   guarantees delivered work a chance at a real ruling after expiry, so a party cannot stall
+    ///   rulings (for example with failing requests) and then refund at expires_at.
+    /// - Ruling (a ruling is running): not while it may still run, because its result could publish
+    ///   k after the refund. request_ruling stops at expires_at + GRACE_NS, so RULING_STALE_NS later
+    ///   no ruling can be running; only a lost callback leaves a job in Ruling then, and the refund
+    ///   opens, so money can never lock.
     pub fn claim_refund(&mut self, job_id: u64) {
         let job = self.jobs.get(&job_id).expect("no such job").clone();
         let now = env::block_timestamp();
         let refundable = match job.state {
             JobState::Funded => now >= job.expires_at_ns,
-            JobState::Submitted | JobState::Ruling => now >= job.expires_at_ns.saturating_add(GRACE_NS),
+            JobState::Submitted => now >= job.expires_at_ns.saturating_add(GRACE_NS),
+            JobState::Ruling => {
+                now >= job
+                    .expires_at_ns
+                    .saturating_add(GRACE_NS)
+                    .saturating_add(RULING_STALE_NS)
+            }
             _ => false,
         };
         require!(refundable, "job is not refundable yet");
@@ -1515,13 +1537,46 @@ mod tests {
 
     #[test]
     fn request_ruling_allowed_past_expiry() {
-        // Decision: request_ruling has no expiry gate. The deliverable was submitted on time, so a
-        // ruling can still be requested after expiry. It races with claim_refund on a Submitted job,
-        // resolved by block order; here it succeeds and moves the job to Ruling.
+        // The deliverable was submitted on time, so a ruling can still be requested after expiry,
+        // up to the last nanosecond of the grace window.
         let mut c = submitted_job();
         set_ctx(PROVIDER, NearToken::from_near(1), EXPIRES + 1, Gas::from_tgas(300));
         c.request_ruling(0).detach();
         assert_eq!(c.get_job(0).unwrap().state, JobState::Ruling);
+        let mut c = submitted_job();
+        set_ctx(PROVIDER, NearToken::from_near(1), EXPIRES + GRACE_NS - 1, Gas::from_tgas(300));
+        c.request_ruling(0).detach();
+        assert_eq!(c.get_job(0).unwrap().state, JobState::Ruling);
+    }
+
+    #[test]
+    #[should_panic(expected = "the grace window is over")]
+    fn request_ruling_rejected_once_the_grace_window_ends() {
+        // From expires_at + GRACE_NS on, a Submitted job is refundable, so no ruling may start: a
+        // ruling still in flight then could publish k while the client takes the refund.
+        let mut c = submitted_job();
+        set_ctx(CLIENT, NearToken::from_near(1), EXPIRES + GRACE_NS, Gas::from_tgas(300));
+        c.request_ruling(0).detach();
+    }
+
+    #[test]
+    fn a_client_cannot_refund_while_its_own_late_ruling_runs() {
+        // The attack v2 allowed: ask for a ruling at the end of the grace window, take the refund a
+        // block later, and read k from OutLayer's result anyway. Now the refund is refused, and the
+        // ruling, when it lands, pays the provider.
+        let mut c = submitted_job();
+        set_ctx(CLIENT, NearToken::from_near(1), EXPIRES + GRACE_NS - 1, Gas::from_tgas(300));
+        c.request_ruling(0).detach();
+        set_ctx(CLIENT, NearToken::from_near(0), EXPIRES + GRACE_NS + 1, Gas::from_tgas(300));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.claim_refund(0)));
+        assert!(refused.is_err(), "no refund while the ruling runs");
+        assert_eq!(c.get_job(0).unwrap().state, JobState::Ruling);
+        let job = c.get_job(0).unwrap();
+        let verdict = valid_verdict(true, &job.ch, &job.dh);
+        callback_ctx(vec![PromiseResult::Successful(verdict.into_bytes())]);
+        c.on_ruling(0, 1);
+        assert_eq!(c.get_job(0).unwrap().state, JobState::Completed);
+        assert_eq!(transfer_to(PROVIDER), Some(NearToken::from_near(5)));
     }
 
     #[test]
@@ -1718,9 +1773,10 @@ mod tests {
 
     #[test]
     fn on_ruling_on_refunded_job_is_ignored() {
-        // Drive to Ruling, then grace-refund, then a late winning verdict must not pay.
+        // Drive to Ruling, refund once the stale window opens (a lost callback), then a late
+        // winning verdict must not pay.
         let mut c = ruling_job();
-        set_ctx(RANGER, NearToken::from_near(0), EXPIRES + GRACE_NS, Gas::from_tgas(300));
+        set_ctx(RANGER, NearToken::from_near(0), EXPIRES + GRACE_NS + RULING_STALE_NS, Gas::from_tgas(300));
         c.claim_refund(0);
         assert_eq!(c.get_job(0).unwrap().state, JobState::Refunded);
         let job = c.get_job(0).unwrap();
@@ -1825,9 +1881,27 @@ mod tests {
     }
 
     #[test]
-    fn claim_refund_ruling_after_grace() {
+    #[should_panic(expected = "not refundable")]
+    fn claim_refund_ruling_rejects_after_grace() {
         let mut c = ruling_job();
         set_ctx(RANGER, NearToken::from_near(0), EXPIRES + GRACE_NS, Gas::from_tgas(300));
+        c.claim_refund(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not refundable")]
+    fn claim_refund_ruling_rejects_until_the_stale_window_ends() {
+        let mut c = ruling_job();
+        set_ctx(RANGER, NearToken::from_near(0), EXPIRES + GRACE_NS + RULING_STALE_NS - 1, Gas::from_tgas(300));
+        c.claim_refund(0);
+    }
+
+    #[test]
+    fn claim_refund_ruling_after_the_stale_window() {
+        // A ruling that never came back (a lost callback) cannot lock the money: a day after the
+        // grace window, when no ruling can still be running, the client is refunded.
+        let mut c = ruling_job();
+        set_ctx(RANGER, NearToken::from_near(0), EXPIRES + GRACE_NS + RULING_STALE_NS, Gas::from_tgas(300));
         c.claim_refund(0);
         assert_eq!(c.get_job(0).unwrap().state, JobState::Refunded);
         assert_eq!(transfer_to(CLIENT), Some(NearToken::from_near(5)));
