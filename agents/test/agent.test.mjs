@@ -93,6 +93,7 @@ const FAIL_FILE = path.join(AGENTS, "tasks", "escrow-report-with-tvl.json");
 const JUDGE_HASH = fs.readFileSync(path.join(ROOT, "judge-wasm", "release", "judge.wasm.sha256"), "utf8").split(/\s+/)[0];
 const FAKE_NEAR_KEY = "ed25519:FAKEtestKeyNotReal7Qm2Wx9Zk4Lp8Rv3Ty6Ub1Nc5Hd0Gj";
 const b64 = (s) => Buffer.from(s).toString("base64");
+const DAY = 24 * 60 * 60 * 1000;
 const sha256hex = (x) => crypto.createHash("sha256").update(x).digest("hex");
 
 // Every temporary folder a test makes is removed when the file's tests end.
@@ -123,7 +124,8 @@ function fakeClock(start = 1_762_000_000_000) {
     now: () => t,
     sleep: async (ms) => {
       t += ms;
-      await new Promise((resolve) => setImmediate(resolve));
+      // One real millisecond per fake wait, so the fake clock cannot race far ahead of real work.
+      await new Promise((resolve) => setTimeout(resolve, 1));
     },
   };
 }
@@ -256,8 +258,10 @@ async function runBoth(task, existing, { flaky = false, workerOpts = {} } = {}) 
     client.deps.near = flakyReads(chain.near, { get_job: 2 });
   }
   const [w, c] = await Promise.all([
-    runWorker({ as: WORKER, once: true, ...workerOpts }, worker.deps),
-    runClient({ as: CLIENT, provider: WORKER, task, amount: "0.5", expiresIn: "2h", outDir }, client.deps),
+    // The shared fake clock moves on every poll, while the real judge takes real time; generous waits
+    // keep either role from giving up while the other is still working (the timeouts have their own test).
+    runWorker({ as: WORKER, once: true, waitMs: DAY, ...workerOpts }, worker.deps),
+    runClient({ as: CLIENT, provider: WORKER, task, amount: "0.5", expiresIn: "2h", outDir, timeoutMs: DAY }, client.deps),
   ]);
   return { chain, worker, client, w, c, tmpdir, outDir };
 }
@@ -416,7 +420,7 @@ test("the client shows control characters in an opened delivery as visible codes
     await COMMANDS["submit-sealed"]({ as: WORKER, job: "0", file }, evil.deps);
     await COMMANDS.ruling({ as: WORKER, job: "0" }, evil.deps);
   };
-  const [, c] = await Promise.all([evilWorker(), runClient({ as: CLIENT, provider: WORKER, task: taskFile, amount: "0.5", expiresIn: "2h", outDir }, client.deps)]);
+  const [, c] = await Promise.all([evilWorker(), runClient({ as: CLIENT, provider: WORKER, task: taskFile, amount: "0.5", expiresIn: "2h", outDir, timeoutMs: DAY }, client.deps)]);
   assert.equal(c.state, "Completed");
   const text = client.lines.join("\n");
   assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text), "no raw control character reaches the terminal");
