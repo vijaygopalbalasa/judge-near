@@ -274,8 +274,9 @@ export function summarizeTx(tx) {
       returned,
     };
   });
-  // What OutLayer did, from its execution_completed events: refused (with its message) or ran (with its resources).
-  const outlayer = receipts.flatMap((r) => r.events.filter((e) => e.standard === "near-outlayer" && e.event === "execution_completed")).map((e) => {
+  // What OutLayer did, from the execution_completed events of OutLayer's own receipts (any contract can log a
+  // look-alike): refused (with its message) or ran (with its resources).
+  const outlayer = receipts.filter((r) => OUTLAYER_ACCOUNTS.has(r.executor)).flatMap((r) => r.events.filter((e) => e.standard === "near-outlayer" && e.event === "execution_completed")).map((e) => {
     const d = Array.isArray(e.data) ? e.data[0] ?? {} : e.data ?? {};
     return { success: d.success === true, error: d.error_message ?? undefined, instructions: d.resources_used?.instructions, timeMs: d.resources_used?.time_ms };
   });

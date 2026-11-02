@@ -42,4 +42,6 @@ test("classifyProbe: refused, ran without the key, or got the key", () => {
   assert.equal(classifyProbe(final(["something else"], "")).outcome, "unclear");
   const event = `EVENT_JSON:${JSON.stringify({ standard: "near-outlayer", event: "execution_completed", data: [{ success: false, error_message: "Access denied by access condition \u2014 signer c.testnet, called from c.testnet." }] })}`;
   assert.deepEqual(classifyProbe(final([event], "null")), { outcome: "refused", detail: "Access denied by access condition \u2014 signer c.testnet, called from c.testnet." }, "the event's own message, not the raw event");
+  const forged = { status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "fake-outlayer.testnet", logs: [event], status: { SuccessValue: "" } } }] };
+  assert.equal(classifyProbe(forged).outcome, "unclear", "a refusal counts only from OutLayer's own receipts");
 });

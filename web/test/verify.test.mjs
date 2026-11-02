@@ -488,4 +488,6 @@ test("summarizeTx reads what OutLayer did: refused with its message, or ran with
   const ran = summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "outlayer.testnet", logs: [ev({ success: true, resources_used: { instructions: 121432, time_ms: 9 } })], status: { SuccessValue: "" } } }] });
   assert.deepEqual(ran.outlayer, [{ success: true, error: undefined, instructions: 121432, timeMs: 9 }]);
   assert.deepEqual(summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [] }).outlayer, []);
+  const forged = summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "fake-outlayer.testnet", logs: [ev({ success: false, error_message: "Access denied by access condition" })], status: { SuccessValue: "" } } }] });
+  assert.deepEqual(forged.outlayer, [], "only OutLayer's own receipts count; any contract can log a look-alike event");
 });

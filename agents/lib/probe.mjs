@@ -3,7 +3,7 @@
 // secret allows only this judge build when the escrow is the caller (docs/interface.md 6.2), so OutLayer must
 // refuse whoever signs, the worker who owns the secret included. tools/vault-probe.mjs sends it.
 
-import { findRuling } from "../../web/verify.js";
+import { OUTLAYER_ACCOUNTS, findRuling } from "../../web/verify.js";
 
 /** request_execution arguments, shaped like the escrow's own request (contract/src/lib.rs, request_ruling). */
 export function buildProbeArgs({ job, judge, profile, payer, clientPk }) {
@@ -22,7 +22,9 @@ export function buildProbeArgs({ job, judge, profile, payer, clientPk }) {
 
 /** What OutLayer did with the probe: refused (and its message), ran the judge without the key, or gave it the key. */
 export function classifyProbe(final) {
-  for (const r of final?.receipts_outcome ?? []) {
+  // Only OutLayer's own receipts count: any contract can log text that looks like a refusal.
+  const outlayer = (final?.receipts_outcome ?? []).filter((r) => OUTLAYER_ACCOUNTS.has(r?.outcome?.executor_id));
+  for (const r of outlayer) {
     for (const log of r?.outcome?.logs ?? []) {
       if (typeof log !== "string" || !log.includes("Access denied")) continue;
       let detail = log;
@@ -37,7 +39,7 @@ export function classifyProbe(final) {
     }
   }
   let verdict = null;
-  for (const r of final?.receipts_outcome ?? []) {
+  for (const r of outlayer) {
     const sv = r?.outcome?.status?.SuccessValue;
     if (typeof sv !== "string" || !sv) continue;
     try {
@@ -50,6 +52,6 @@ export function classifyProbe(final) {
   if (!verdict) verdict = findRuling(final)?.verdict ?? null;
   if (verdict?.err === "key_missing") return { outcome: "no-key", detail: "the judge ran without the key and answered key_missing" };
   if (verdict && typeof verdict.k === "string") return { outcome: "got-the-key", detail: "the judge read the key and sealed it to the probe's key" };
-  const logs = (final?.receipts_outcome ?? []).flatMap((r) => r?.outcome?.logs ?? []).join(" | ");
+  const logs = outlayer.flatMap((r) => r?.outcome?.logs ?? []).join(" | ");
   return { outcome: "unclear", detail: logs || "no OutLayer log and no verdict" };
 }
