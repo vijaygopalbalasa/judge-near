@@ -30,19 +30,40 @@ jobs:
       - name: judge tests
         working-directory: judge-wasm
         run: cargo test --locked
+  judge-build-macos:
+    # The published judge was built on macOS on Apple silicon (aarch64-apple-darwin). This job rebuilds it on
+    # GitHub's macOS arm64 runner and checks the bytes against judge-wasm/release/judge.wasm.sha256.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          targets: wasm32-wasip1
       - name: the judge build reproduces judge-wasm/release/judge.wasm.sha256
         working-directory: judge-wasm
         run: |
           CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
-            cargo build --release --locked --target wasm32-wasip1
-          sha256sum target/wasm32-wasip1/release/judge.wasm
-          echo "$(cut -d' ' -f1 release/judge.wasm.sha256)  target/wasm32-wasip1/release/judge.wasm" | sha256sum -c -
-      - name: keep the built judge when it differs
-        if: failure()
-        uses: actions/upload-artifact@v4
+            cargo build --release --locked --target wasm32-wasip1 -v 2>&1 | grep -o "metadata=[0-9a-f]*" | sort -u | tr '\n' ' '
+          echo
+          shasum -a 256 target/wasm32-wasip1/release/judge.wasm
+          echo "$(cut -d' ' -f1 release/judge.wasm.sha256)  target/wasm32-wasip1/release/judge.wasm" | shasum -a 256 -c -
+  judge-build-linux:
+    # For information: the same build on Linux x86_64, with cargo's metadata hashes printed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
-          name: judge-wasm-built-on-linux
-          path: judge-wasm/target/wasm32-wasip1/release/judge.wasm
+          toolchain: 1.99.1
+          targets: wasm32-wasip1
+      - name: build on Linux and print the hash (not checked)
+        working-directory: judge-wasm
+        run: |
+          CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
+            cargo build --release --locked --target wasm32-wasip1 -v 2>&1 | grep -o "metadata=[0-9a-f]*" | sort -u | tr '\n' ' '
+          echo
+          sha256sum target/wasm32-wasip1/release/judge.wasm
   contract:
     runs-on: ubuntu-latest
     steps:
