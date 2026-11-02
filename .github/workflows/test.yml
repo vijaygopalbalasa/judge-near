@@ -35,7 +35,14 @@ jobs:
         run: |
           CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
             cargo build --release --locked --target wasm32-wasip1
+          sha256sum target/wasm32-wasip1/release/judge.wasm
           echo "$(cut -d' ' -f1 release/judge.wasm.sha256)  target/wasm32-wasip1/release/judge.wasm" | sha256sum -c -
+      - name: keep the built judge when it differs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-wasm-built-on-linux
+          path: judge-wasm/target/wasm32-wasip1/release/judge.wasm
   contract:
     runs-on: ubuntu-latest
     steps:
