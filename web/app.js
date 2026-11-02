@@ -1,5 +1,5 @@
 // Page wiring for web/index.html. All checking logic lives in verify.js; reading the escrow in escrow.js.
-import { ESCROW, JOB_NOTES, RULINGS, disclosedDelivery, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "./escrow.js";
+import { ESCROW, JOB_NOTES, RULINGS, discoverRulings, disclosedDelivery, formatNear, formatTime, jobOutcome, mergeRulings, parseDeepLink, readEscrow } from "./escrow.js";
 import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
@@ -136,7 +136,7 @@ function rulingRow(r, disclosed) {
   return box;
 }
 
-function jobCard(job, jobs) {
+function jobCard(job, jobs, allRulings) {
   const card = el("article", "job");
   card.id = `job-${job.id}`;
   const head = el("div", "job-head");
@@ -161,16 +161,20 @@ function jobCard(job, jobs) {
   const c = el("details");
   c.append(el("summary", "", "Criteria"), el("pre", "", prettyCriteria(job.criteria)));
   card.append(c);
-  const rulings = RULINGS.filter((r) => r.job === job.id);
-  if (rulings.length === 0) card.append(el("p", "meta", "No ruling of this job is listed on this page; paste its transaction in panel 2 to check it."));
+  const rulings = allRulings.filter((r) => r.job === job.id);
+  if (rulings.length === 0) card.append(el("p", "meta", "No ruling found for this job; to check one, paste its transaction in panel 2."));
   for (const r of rulings) card.append(rulingRow(r, disclosed));
   return card;
 }
 
 async function loadJobs() {
   const status = $("jobs-status");
+  // Rulings come from FastNEAR's transaction index; the list in escrow.js stands in when it does not answer.
+  const indexed = discoverRulings(ESCROW).catch((err) => ({ error: err }));
   try {
     const escrow = await readEscrow(ESCROW);
+    const found = await indexed;
+    const rulings = mergeRulings(RULINGS, Array.isArray(found) ? found : null);
     const facts = $("escrow-facts");
     facts.replaceChildren(
       escrow.publishedBuild
@@ -185,8 +189,11 @@ async function loadJobs() {
     );
     status.className = "summary";
     const shown = escrow.jobs.slice(-MAX_CARDS).reverse();
-    status.textContent = `${escrow.jobs.length} jobs, read at block ${escrow.blockHeight}; newest first${escrow.jobs.length > MAX_CARDS ? `, the ${MAX_CARDS} newest shown` : ""}.`;
-    $("jobs").replaceChildren(...shown.map((job) => jobCard(job, escrow.jobs)));
+    const source = Array.isArray(found)
+      ? "rulings found through FastNEAR's transaction index"
+      : `rulings from the list in escrow.js (the transaction index did not answer: ${found.error.message})`;
+    status.textContent = `${escrow.jobs.length} jobs and ${rulings.length} rulings, read at block ${escrow.blockHeight}; newest first${escrow.jobs.length > MAX_CARDS ? `, the ${MAX_CARDS} newest shown` : ""}; ${source}.`;
+    $("jobs").replaceChildren(...shown.map((job) => jobCard(job, escrow.jobs, rulings)));
   } catch (err) {
     status.className = "summary bad";
     status.textContent = `Could not read the escrow: ${err.message}`;

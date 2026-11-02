@@ -38,7 +38,7 @@ AI Security & Defense.
 | Judge (Rust, `wasm32-wasip1`) | Works, v2 (public and sealed jobs): 305 parity vectors against the original engine plus 42 sealed vectors, fuel-bounded; the build reproduces byte for byte on macOS on Apple silicon (step 4) |
 | Judge running on OutLayer testnet | Works: v1 called directly ([tx 4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for ten rulings ([below](#the-escrow-on-testnet)); every public verdict identical to a local run, every sealed one consistent without the key and identical with it; the sealed rulings of jobs 2 to 4 also re-run in full on their disclosed text, with no key |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused (transactions below) |
-| Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Works: re-runs public rulings, sealed rulings with the delivery key or, once the delivery is disclosed, on that text with no key, and key_missing rulings without one; the page lists the escrow's jobs live (newest first), with a Verify button for each ruling listed in `web/escrow.js`, and a sealed ruling without its key still gets the checks that need none |
+| Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Works: re-runs public rulings, sealed rulings with the delivery key or, once the delivery is disclosed, on that text with no key, and key_missing rulings without one; the page lists the escrow's jobs live (newest first) with a Verify button for each ruling, found through FastNEAR's transaction index (the list in `web/escrow.js` stands in when the index does not answer), and a sealed ruling without its key still gets the checks that need none |
 | Escrow contract (near-sdk 5), public and sealed jobs | Works: 112 unit tests, 13 tests in the NEAR sandbox, 79 planted bugs caught (78 by the unit tests through `contract/scripts/mutate.py`, the 79th by the sandbox suite); deployed on testnet as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/`) | Works: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify, forget; runs the judge on a delivery before sending it; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; every path run live on testnet ([below](#the-escrow-on-testnet)) |
 | Two agents (`agents/agent.mjs`) | Works: a client agent posts and funds a sealed job, a worker agent fills the fields its criteria require from facts on chain, checks its report with the judge first, delivers it sealed, asks for the ruling, and deletes its vault key once the job settles; two passes and two fails run live on testnet (jobs 5 to 8, [below](#two-agents-no-human)); 79 offline tests in `agents/` |
@@ -94,7 +94,7 @@ published build.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
-| `node --test web/test/*.test.mjs` | 54 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 58 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (the pinned rustc 1.99.1) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed, about 5 minutes the first time and 1 to 2 after; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow; the first contract test run downloads the NEAR sandbox |
@@ -290,7 +290,9 @@ delivery, after the worker's own check said it would fail.
   that. Also trusted: OutLayer's keystore coordinator (the worker encrypts its key to the public key it serves over
   HTTPS; this tool does not check an attestation for it), OutLayer's contract (its owner can upgrade it), the vault rule
   as OutLayer enforces it (off chain: a refusal is an OutLayer event, not a contract revert), and, for the verifier,
-  the RPC node it reads. The judge file's host (GitHub) is not trusted: OutLayer and the verifier check its SHA-256.
+  the RPC node it reads. To list rulings, the page asks FastNEAR's transaction index for the escrow's transactions;
+  an index that left one out could hide a ruling, but it cannot make one pass, because Verify reads each ruling from
+  NEAR archival nodes. The judge file's host (GitHub) is not trusted: OutLayer and the verifier check its SHA-256.
 - **What the judge can check:** properties a program can verify (length, terms, JSON structure, checksums). It does
   not judge taste or open-ended quality.
 - **What is public:** in sealed jobs the criteria, the per-check results and the hashes are on chain; the

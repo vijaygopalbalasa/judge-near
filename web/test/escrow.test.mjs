@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ESCROW, JOB_NOTES, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, disclosedDelivery, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "../escrow.js";
+import { ESCROW, JOB_NOTES, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, TESTNET_TX_INDEX, discoverRulings, disclosedDelivery, formatNear, formatTime, jobOutcome, mergeRulings, parseDeepLink, readEscrow, rulingFromIndexed } from "../escrow.js";
 import { TESTNET_ARCHIVAL_RPCS } from "../verify.js";
 import * as agentsConfig from "../../agents/lib/config.mjs";
 
@@ -201,4 +201,88 @@ test("a sealed job's delivery is disclosed when a public job delivered text with
 
 test("the one ruling that never opened a delivery (job 4's key_missing) is marked, so the page offers no delivery check for it", () => {
   assert.deepEqual(RULINGS.filter((r) => r.keyMissing).map((r) => [r.job, r.tx]), [[4, "J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3"]]);
+});
+
+// ---- finding the rulings: FastNEAR's transaction index, with the README's list as the fallback ----
+
+const indexFixture = JSON.parse(readFileSync(path.join(root, "web/test/fixtures/fastnear-escrow-index.json"), "utf8"));
+const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+const asListed = (r) => ({ job: r.job, tx: r.tx, signer: r.signer, keyMissing: Boolean(r.keyMissing) });
+
+/** A fake transaction index that answers from the recording of Nov 3 2026. */
+function fakeIndex() {
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    asked.push({ url, body });
+    if (url === `${TESTNET_TX_INDEX}/v0/account`) return ok(indexFixture.account);
+    if (url === `${TESTNET_TX_INDEX}/v0/transactions`) return ok({ transactions: body.tx_hashes.map((h) => indexFixture.transactions[h]).filter(Boolean) });
+    throw new Error(`asked an unexpected URL: ${url}`);
+  };
+  return { fetchImpl, asked };
+}
+
+test("discoverRulings finds the escrow's rulings through FastNEAR's transaction index: the README's ten, in order, job 4's key_missing one marked", async () => {
+  const { fetchImpl, asked } = fakeIndex();
+  const found = await discoverRulings(ESCROW, { fetchImpl });
+  assert.deepEqual(found.map(asListed), RULINGS.map(asListed));
+  const account = asked.filter((a) => a.url.endsWith("/v0/account"));
+  assert.deepEqual(account.map((a) => a.body), [{ account_id: ESCROW, limit: 200 }]);
+  const batches = asked.filter((a) => a.url.endsWith("/v0/transactions"));
+  assert.ok(batches.length >= 2 && batches.every((b) => b.body.tx_hashes.length <= 20), "transactions are asked for in batches of at most 20");
+});
+
+test("discoverRulings reads every page of the index (resume_token), stops after ten pages, and fails loudly on an HTTP error", async () => {
+  const all = indexFixture.account.account_txs;
+  const pages = [all.slice(0, 15), all.slice(15, 30), all.slice(30)];
+  const tokens = [];
+  const paged = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith("/v0/account")) {
+      tokens.push(body.resume_token);
+      const i = body.resume_token === undefined ? 0 : Number(body.resume_token);
+      return ok({ account_txs: pages[i], ...(i + 1 < pages.length ? { resume_token: String(i + 1) } : {}) });
+    }
+    return ok({ transactions: body.tx_hashes.map((h) => indexFixture.transactions[h]).filter(Boolean) });
+  };
+  assert.equal((await discoverRulings(ESCROW, { fetchImpl: paged })).length, 10);
+  assert.deepEqual(tokens, [undefined, "1", "2"]);
+  let calls = 0;
+  const endless = async (url) => {
+    if (url.endsWith("/v0/account")) {
+      calls++;
+      return ok({ account_txs: [], resume_token: "7" });
+    }
+    return ok({ transactions: [] });
+  };
+  assert.deepEqual(await discoverRulings(ESCROW, { fetchImpl: endless }), []);
+  assert.equal(calls, 10);
+  const down = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  await assert.rejects(discoverRulings(ESCROW, { fetchImpl: down }), /transaction index.*HTTP 503/);
+});
+
+test("only a request_ruling to the escrow that the escrow itself logged as ruling_requested counts as a ruling", () => {
+  const recovered = indexFixture.transactions["5G6jQja3xjvw6tnzkmpE3P86Sracs5PFStJJP38o4a2J"];
+  assert.deepEqual(asListed(rulingFromIndexed(recovered, ESCROW)), { job: 4, tx: "5G6jQja3xjvw6tnzkmpE3P86Sracs5PFStJJP38o4a2J", signer: "judgenear-worker.testnet", keyMissing: false });
+  assert.equal(rulingFromIndexed(indexFixture.transactions["J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3"], ESCROW).keyMissing, true);
+  const spoof = structuredClone(recovered);
+  for (const r of spoof.receipts) r.execution_outcome.outcome.executor_id = "look-alike.testnet";
+  assert.equal(rulingFromIndexed(spoof, ESCROW), null, "the same events logged by another account do not count");
+  const elsewhere = structuredClone(recovered);
+  elsewhere.transaction.receiver_id = "other.testnet";
+  assert.equal(rulingFromIndexed(elsewhere, ESCROW), null);
+  const refused = structuredClone(recovered);
+  for (const r of refused.receipts) r.execution_outcome.outcome.logs = [];
+  assert.equal(rulingFromIndexed(refused, ESCROW), null, "a request the escrow refused has no ruling_requested event");
+  const fund = Object.values(indexFixture.transactions).find((t) => t.transaction.actions[0]?.FunctionCall?.method_name === "fund");
+  assert.equal(rulingFromIndexed(fund, ESCROW), null);
+  assert.equal(rulingFromIndexed(null, ESCROW), null);
+});
+
+test("mergeRulings: the index's rulings plus any listed one it left out; the list alone when the index did not answer", () => {
+  const found = [{ job: 0, tx: "A", signer: "w" }, { job: 1, tx: "B", signer: "c" }];
+  const listed = [{ job: 0, tx: "A", signer: "w" }, { job: 2, tx: "C", signer: "w", keyMissing: true }];
+  assert.deepEqual(mergeRulings(listed, found).map((r) => r.tx), ["A", "B", "C"]);
+  assert.equal(mergeRulings(listed, found).at(-1).keyMissing, true);
+  assert.deepEqual(mergeRulings(listed, null), listed);
 });

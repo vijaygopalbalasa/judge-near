@@ -1,7 +1,7 @@
 // Read the testnet escrow's jobs for the page: its code hash, its judge and every job, through
 // read-only RPC calls. Nothing here signs or sends anything.
 
-import { TESTNET_ARCHIVAL_RPCS, rpcCall } from "./verify.js";
+import { RPC_TIMEOUT_MS, TESTNET_ARCHIVAL_RPCS, rpcCall } from "./verify.js";
 
 /** The escrow deployed on testnet (README, "The escrow on testnet"). */
 export const ESCROW = "judgenear-escrow.testnet";
@@ -14,9 +14,10 @@ export const PUBLISHED_ESCROW_CODE_HASH = "Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrW
 export const TESTNET_STATE_RPCS = Object.freeze(["https://rpc.testnet.fastnear.com", "https://rpc.testnet.near.org", ...TESTNET_ARCHIVAL_RPCS]);
 
 /**
- * The rulings of the escrow's jobs, as listed in the README's table. The chain has no index from a
- * job to its ruling transactions, so they are listed here; each Verify also checks that the
- * transaction's request_ruling call names this job of this escrow.
+ * The rulings of the escrow's jobs, as listed in the README's table. The chain itself has no index from a job to its
+ * ruling transactions; the page asks FastNEAR's transaction index (discoverRulings) and falls back to this list when
+ * the index does not answer. Each Verify also checks that the transaction's request_ruling call names this job of
+ * this escrow.
  */
 export const RULINGS = Object.freeze([
   { job: 0, tx: "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", signer: "judgenear-worker.testnet" },
@@ -54,6 +55,96 @@ export function disclosedDelivery(job, jobs) {
 
 const PAGE_SIZE = 10;
 const MAX_PAGES = 100;
+
+/** FastNEAR's transaction index for testnet, used only to find ruling transactions (README, trust list). */
+export const TESTNET_TX_INDEX = "https://tx.test.fastnear.com";
+const INDEX_LIMIT = 200;
+const INDEX_MAX_PAGES = 10;
+const INDEX_BATCH = 20;
+
+async function indexPost(index, route, body, fetchImpl, timeoutMs) {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(`${index}${route}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: abort.signal });
+    if (res.ok === false) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    throw new Error(`the transaction index ${index}${route} did not answer: ${abort.signal.aborted ? `no answer within ${timeoutMs / 1000} s` : e?.message ?? e}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The escrow's own judge_near events in an indexed transaction: [{event, data}]. Other accounts' logs never count. */
+function escrowEvents(indexed, escrow) {
+  const events = [];
+  for (const r of Array.isArray(indexed?.receipts) ? indexed.receipts : []) {
+    const outcome = r?.execution_outcome?.outcome;
+    if (outcome?.executor_id !== escrow) continue;
+    for (const log of Array.isArray(outcome.logs) ? outcome.logs : []) {
+      if (typeof log !== "string" || !log.startsWith("EVENT_JSON:")) continue;
+      try {
+        const e = JSON.parse(log.slice("EVENT_JSON:".length));
+        if (e?.standard === "judge_near") events.push(e);
+      } catch {
+        // not an event
+      }
+    }
+  }
+  return events;
+}
+
+/**
+ * One transaction from the index, as a ruling {job, tx, signer, keyMissing, height}, or null. It counts only when it
+ * calls request_ruling on the escrow and the escrow itself logged ruling_requested (the escrow asked OutLayer);
+ * keyMissing when the escrow logged ruling_rejected with reason key_missing.
+ */
+export function rulingFromIndexed(indexed, escrow = ESCROW) {
+  const tx = indexed?.transaction;
+  if (!tx || tx.receiver_id !== escrow || typeof tx.hash !== "string" || typeof tx.signer_id !== "string") return null;
+  const actions = Array.isArray(tx.actions) ? tx.actions : [];
+  if (!actions.some((a) => a?.FunctionCall?.method_name === "request_ruling")) return null;
+  const events = escrowEvents(indexed, escrow);
+  const job = events.find((e) => e.event === "ruling_requested")?.data?.[0]?.job_id;
+  if (!Number.isSafeInteger(job)) return null;
+  const keyMissing = events.some((e) => e.event === "ruling_rejected" && e.data?.[0]?.reason === "key_missing");
+  return { job, tx: tx.hash, signer: tx.signer_id, keyMissing, height: Number(indexed.execution_outcome?.block_height) || 0 };
+}
+
+/**
+ * Every ruling on the escrow, oldest first, found through FastNEAR's transaction index: the transactions sent to the
+ * escrow, then the request_ruling calls among them. The index only finds transactions; Verify checks each one from
+ * NEAR archival nodes, so an index that left one out could hide a ruling but never make one pass.
+ */
+export async function discoverRulings(escrow = ESCROW, { index = TESTNET_TX_INDEX, fetchImpl = globalThis.fetch, timeoutMs = RPC_TIMEOUT_MS } = {}) {
+  const hashes = [];
+  let token;
+  for (let page = 0; page < INDEX_MAX_PAGES; page++) {
+    const listed = await indexPost(index, "/v0/account", { account_id: escrow, limit: INDEX_LIMIT, ...(token === undefined ? {} : { resume_token: token }) }, fetchImpl, timeoutMs);
+    for (const t of Array.isArray(listed?.account_txs) ? listed.account_txs : []) {
+      if (t?.is_receiver && t?.is_function_call && typeof t.transaction_hash === "string" && !hashes.includes(t.transaction_hash)) hashes.push(t.transaction_hash);
+    }
+    token = listed?.resume_token ?? undefined;
+    if (token === undefined || token === null) break;
+  }
+  const found = [];
+  for (let i = 0; i < hashes.length; i += INDEX_BATCH) {
+    const batch = await indexPost(index, "/v0/transactions", { tx_hashes: hashes.slice(i, i + INDEX_BATCH) }, fetchImpl, timeoutMs);
+    for (const t of Array.isArray(batch?.transactions) ? batch.transactions : []) {
+      const r = rulingFromIndexed(t, escrow);
+      if (r) found.push(r);
+    }
+  }
+  return found.sort((a, b) => a.height - b.height);
+}
+
+/** The rulings to show: the index's, plus any listed one it left out; the list alone when `found` is null. */
+export function mergeRulings(listed, found) {
+  if (!Array.isArray(found)) return listed;
+  const seen = new Set(found.map((r) => r.tx));
+  return [...found, ...listed.filter((r) => !seen.has(r.tx))];
+}
 
 /** Call a view method and parse its JSON result. */
 async function viewFunction(account, method, args, { rpc, fetchImpl }) {
