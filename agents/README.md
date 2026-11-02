@@ -32,6 +32,18 @@ Sealed jobs create two secrets. Both are kept only under `~/.judge-near/<account
 
 `open` writes the decrypted delivery to a file with mode 0600.
 
+## Safety checks
+
+Live, every command except `open` and `status` first checks the escrow it is about to use:
+
+- the code hash NEAR reports for it must be the published escrow build (`../contract/BUILD.md`), and
+- its `get_judge` must name the published judge (`../judge-wasm/release/judge.wasm.sha256`).
+
+OutLayer's keystore rule names the escrow account, so a fake escrow could otherwise run the real
+judge on inputs it chose and take a sealed delivery without paying. `ruling` also refuses to
+attach more than 0.1 NEAR. To use another build on purpose, pass its exact hash with
+`--escrow-code-hash` or `--judge-hash`.
+
 ## Commands
 
 ```

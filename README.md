@@ -21,7 +21,7 @@ AI Security & Defense.
 | OutLayer vault rules for sealed keys | Verified on testnet with `tools/keystore-probe` (transactions below) |
 | Browser verifier (`web/`) | Done, runs locally; re-runs public and sealed rulings |
 | Escrow contract (near-sdk 5), public and sealed jobs | Done: 112 unit tests, 13 tests in the NEAR sandbox, 79 of 79 planted bugs caught; testnet deployment next |
-| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open; 22 offline tests; live testnet run next |
+| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open; checks the escrow's code and judge before any live step; 36 offline tests; live testnet run next |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -47,7 +47,7 @@ The second panel runs the judge on criteria and a deliverable you type.
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
-| `cd agents && npm ci && npm test` | 22 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `cd agents && npm ci && npm test` | 36 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 
 **3. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 
@@ -137,6 +137,9 @@ One limit of these probe runs: they were signed and called by the same account, 
 - **Cost bound:** the judge's measured worst case over adversarial but valid inputs is about 0.60 billion
   instructions and 22 ms; the escrow asks OutLayer for 50 billion instructions and 30 seconds
   (`judge-wasm/RESOURCE-LIMITS.md`).
+- **The escrow account:** OutLayer's keystore rule names the escrow account, so a worker also trusts the code
+  that account runs. `agents/` checks its code hash and judge before every live step, but an account that still
+  has a full-access key can have its code replaced by its owner later.
 - **Testnet only** so far. No third-party users yet.
 
 ## Repository map

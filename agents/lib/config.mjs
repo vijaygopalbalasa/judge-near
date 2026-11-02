@@ -6,6 +6,15 @@ export const OUTLAYER = "outlayer.testnet";
 export const KEYSTORE_PUBKEY_URL = "https://testnet-api.outlayer.ai/secrets/pubkey";
 export const USER_AGENT = "judge-near-agents/0.1";
 
+// The escrow build this repo publishes (contract/BUILD.md), as the code hash NEAR reports for
+// an account that runs it. Live commands refuse any other escrow code unless the user names
+// that exact hash with --escrow-code-hash.
+export const PUBLISHED_ESCROW_CODE_HASH = "Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga";
+
+// The most a ruling may attach. Whoever deploys an escrow picks its min_ruling_deposit; above
+// this cap the ruling command refuses to sign.
+export const MAX_RULING_DEPOSIT_NEAR = "0.1";
+
 // Interface limits (docs/interface.md sections 1 and 6.1).
 export const MAX_CRITERIA_BYTES = 4096;
 export const MAX_DELIVERABLE_BYTES = 16384;

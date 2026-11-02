@@ -20,8 +20,13 @@ const USAGE = `usage: node jn.mjs <command> [options]   (escrow from JN_ESCROW; 
   status        --job N
 
   --dry-run      print the exact call(s) and stop: no key is read, nothing is sent
-  --judge-hash   (submit-sealed --dry-run) judge sha256 to show; default: judge-wasm/release
   --min-deposit  (ruling --dry-run) NEAR amount to show instead of get_judge's
+
+  Live, every command except open and status first checks that the escrow runs the
+  published escrow build and the published judge, and ruling refuses a deposit above
+  0.1 NEAR. To accept another build on purpose, name its exact hash:
+  --escrow-code-hash  the escrow's base58 code hash
+  --judge-hash        the judge's sha256 (also the hash submit-sealed --dry-run shows)
 `;
 
 let parsed;
@@ -41,6 +46,7 @@ try {
       out: { type: "string" },
       "dry-run": { type: "boolean" },
       "judge-hash": { type: "string" },
+      "escrow-code-hash": { type: "string" },
       "min-deposit": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
@@ -73,7 +79,7 @@ const deps = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   fetch: dryRun ? refuse : globalThis.fetch,
   near: dryRun
-    ? { view: refuse, call: refuse, txStatus: refuse }
+    ? { codeHash: refuse, view: refuse, call: refuse, txStatus: refuse }
     : createNear({ rpcUrl: process.env.JN_RPC || DEFAULT_RPC_URL, home: os.homedir() }),
 };
 

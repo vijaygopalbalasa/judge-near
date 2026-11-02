@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { decryptDeliverable, encryptDeliverable, publicFromSecret, sealK } from "../../judge-wasm/scripts/sealed.mjs";
 import { COMMANDS, rulingResult } from "../lib/commands.mjs";
+import { PUBLISHED_ESCROW_CODE_HASH } from "../lib/config.mjs";
 import { eciesDecrypt, secretsProfile } from "../lib/keystore.mjs";
 import { loadAccountKey } from "../lib/near.mjs";
 import { saveClientKey } from "../lib/secrets-store.mjs";
@@ -24,6 +25,7 @@ const PROVIDER = "bob.testnet";
 const CRITERIA = path.join(AGENTS, "examples", "criteria.json");
 const DELIVERABLE = path.join(AGENTS, "examples", "deliverable.txt");
 const FAKE_NEAR_KEY = "ed25519:FAKEtestKeyNotReal7Qm2Wx9Zk4Lp8Rv3Ty6Ub1Nc5Hd0Gj";
+const ESCROW_CODE = PUBLISHED_ESCROW_CODE_HASH;
 const JUDGE_HASH = fs.readFileSync(path.join(ROOT, "judge-wasm", "release", "judge.wasm.sha256"), "utf8").split(/\s+/)[0];
 const HEX64 = /^[0-9a-f]{64}$/;
 const sha256hex = (b) => crypto.createHash("sha256").update(b).digest("hex");
@@ -70,7 +72,7 @@ function assertNoKeyMaterial(text, keys, label) {
 const offline = () => {
   throw new Error("this test runs offline");
 };
-const OFFLINE_NEAR = { view: offline, call: offline, txStatus: offline };
+const OFFLINE_NEAR = { codeHash: offline, view: offline, call: offline, txStatus: offline };
 
 const DRY_RUNS = [
   ["create", { as: CLIENT, provider: PROVIDER, criteria: CRITERIA, "expires-in": "2h" }, ["create_job"]],
@@ -114,6 +116,10 @@ test("a sealed job end to end on a fake chain: secrets stay in ~/.judge-near (06
   let job = null;
   let final = null;
   const near = {
+    async codeHash(accountId) {
+      assert.equal(accountId, ESCROW);
+      return ESCROW_CODE;
+    },
     async view(contractId, method, args) {
       assert.equal(contractId, ESCROW);
       if (method === "get_judge") return { outlayer: "outlayer.testnet", url: "https://example.org/judge.wasm", hash: JUDGE_HASH, build_target: "wasm32-wasip1", min_ruling_deposit: "10000000000000000000000" };
@@ -227,6 +233,7 @@ test("submit-sealed refuses an escrow whose secrets profile differs, before savi
   const home = tempHome();
   const calls = [];
   const near = {
+    codeHash: async () => ESCROW_CODE,
     view: async (_c, method) => (method === "get_judge" ? { hash: JUDGE_HASH, min_ruling_deposit: "1" } : "jn-0000000000000000-0"),
     call: async (...a) => calls.push(a),
   };
@@ -299,4 +306,90 @@ test("jn.mjs --dry-run runs every subcommand from the command line, offline, pri
   }
   assert.ok(!fs.existsSync(path.join(home, ".judge-near")), "a dry run must not write secrets");
   assert.equal(cli(["create", "--as", CLIENT]).status, 1, "missing flags fail cleanly");
+});
+
+/** A fake chain for the escrow checks: the account's code hash, get_judge, and a call recorder. */
+function checkedNear({ code = ESCROW_CODE, judge = JUDGE_HASH, minDeposit = "10000000000000000000000" } = {}) {
+  const calls = [];
+  const near = {
+    codeHash: async (accountId) => {
+      assert.equal(accountId, ESCROW);
+      return code;
+    },
+    view: async (_c, method, args) => {
+      if (method === "get_judge") return { hash: judge, min_ruling_deposit: minDeposit };
+      if (method === "get_secrets_profile") return secretsProfile(ESCROW, args.job_id);
+      throw new Error(`unexpected view ${method}`);
+    },
+    call: async (_signer, c) => {
+      calls.push(c);
+      return { txHash: "tx1", outcome: { status: { SuccessValue: Buffer.from("0").toString("base64") } } };
+    },
+    txStatus: async () => ({ status: { SuccessValue: "" }, receipts_outcome: [] }),
+  };
+  return { near, calls };
+}
+
+const LIVE = [
+  ["create", { as: CLIENT, provider: PROVIDER, criteria: CRITERIA, "expires-in": "2h", sealed: true }],
+  ["fund", { as: CLIENT, job: "0", amount: "1" }],
+  ["submit", { as: PROVIDER, job: "0", file: DELIVERABLE }],
+  ["submit-sealed", { as: PROVIDER, job: "0", file: DELIVERABLE }],
+  ["ruling", { as: PROVIDER, job: "0" }],
+];
+
+for (const [command, opts] of LIVE) {
+  test(`live ${command} refuses an escrow that does not run the published escrow build, before saving or signing anything`, async () => {
+    const home = tempHome();
+    const { near, calls } = checkedNear({ code: "11111111111111111111111111111111" });
+    const { deps } = makeDeps({ home, near, fetch: offline });
+    await assert.rejects(COMMANDS[command](opts, deps), /runs code 11111111111111111111111111111111/);
+    assert.equal(calls.length, 0, "nothing may be signed for an unknown escrow");
+    assert.ok(!fs.existsSync(path.join(home, ".judge-near")), "no secret may be saved for an unknown escrow");
+  });
+
+  test(`live ${command} refuses an escrow that does not run the published judge, before saving or signing anything`, async () => {
+    const home = tempHome();
+    const { near, calls } = checkedNear({ judge: "0".repeat(64) });
+    const { deps } = makeDeps({ home, near, fetch: offline });
+    await assert.rejects(COMMANDS[command](opts, deps), /runs judge 0{64}/);
+    assert.equal(calls.length, 0);
+    assert.ok(!fs.existsSync(path.join(home, ".judge-near")));
+  });
+}
+
+test("--escrow-code-hash and --judge-hash accept another build only when they name it exactly", async () => {
+  const other = { code: "11111111111111111111111111111111", judge: "0".repeat(64) };
+  const wrongFlag = checkedNear(other);
+  const a = makeDeps({ home: tempHome(), near: wrongFlag.near, fetch: offline });
+  await assert.rejects(COMMANDS.fund({ as: CLIENT, job: "0", amount: "1", "escrow-code-hash": "2".repeat(32), "judge-hash": other.judge }, a.deps), /runs code 1{32}/);
+  assert.equal(wrongFlag.calls.length, 0);
+
+  const named = checkedNear(other);
+  const b = makeDeps({ home: tempHome(), near: named.near, fetch: offline });
+  await COMMANDS.fund({ as: CLIENT, job: "0", amount: "1", "escrow-code-hash": other.code, "judge-hash": other.judge }, b.deps);
+  assert.equal(named.calls.length, 1);
+  assert.match(b.lines.join("\n"), /accepted by flag/);
+});
+
+test("live commands say which escrow and judge builds they checked", async () => {
+  const { near, calls } = checkedNear();
+  const { deps, lines } = makeDeps({ home: tempHome(), near, fetch: offline });
+  await COMMANDS.fund({ as: CLIENT, job: "0", amount: "1" }, deps);
+  assert.equal(calls.length, 1);
+  assert.ok(lines.join("\n").includes(`code ${ESCROW_CODE}, judge ${JUDGE_HASH} (the published builds)`));
+});
+
+test("ruling refuses a min_ruling_deposit above the 0.1 NEAR cap and signs nothing", async () => {
+  const { near, calls } = checkedNear({ minDeposit: "1000000000000000000000000" });
+  const { deps } = makeDeps({ home: tempHome(), near, fetch: offline });
+  await assert.rejects(COMMANDS.ruling({ as: PROVIDER, job: "0" }, deps), /above the 0\.1 NEAR cap/);
+  assert.equal(calls.length, 0);
+});
+
+test("the escrow code hash the agents expect is the one contract/BUILD.md publishes", () => {
+  const build = fs.readFileSync(path.join(ROOT, "contract", "BUILD.md"), "utf8");
+  const m = /SHA-256 base58 \(NEAR code_hash form\): `([1-9A-HJ-NP-Za-km-z]{43,44})`/.exec(build);
+  assert.ok(m, "contract/BUILD.md names the base58 code hash");
+  assert.equal(PUBLISHED_ESCROW_CODE_HASH, m[1]);
 });

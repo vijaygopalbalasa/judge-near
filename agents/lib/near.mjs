@@ -26,6 +26,9 @@ export function loadAccountKey(home, accountId) {
 export function createNear({ rpcUrl, home }) {
   const provider = new JsonRpcProvider({ url: rpcUrl });
   return {
+    /** The base58 hash of the code an account runs, as NEAR reports it. */
+    codeHash: async (accountId) => (await provider.viewAccount({ accountId })).code_hash,
+
     /** A view call; returns the parsed JSON result. */
     view: (contractId, method, args) => provider.callFunction({ contractId, method, args }),
 

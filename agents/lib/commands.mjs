@@ -57,6 +57,28 @@ function committedJudgeHash() {
   return fs.readFileSync(path.join(HERE, "..", "..", "judge-wasm", "release", "judge.wasm.sha256"), "utf8").trim().split(/\s+/)[0];
 }
 
+/** Live only, before any secret is saved or any call is signed: the escrow must run the
+ *  published escrow build (the code hash NEAR reports) and the published judge (get_judge),
+ *  unless the user names another build on purpose with --escrow-code-hash or --judge-hash.
+ *  The keystore rule names the escrow account, so a fake escrow could run the real judge on
+ *  inputs it chose and take a sealed delivery without paying, or keep a deposit. Returns
+ *  get_judge's view. */
+async function checkEscrow(opts, deps, escrow) {
+  const byFlag = Boolean(opts["escrow-code-hash"] || opts["judge-hash"]);
+  const code = await deps.near.codeHash(escrow);
+  const wantCode = opts["escrow-code-hash"] ?? cfg.PUBLISHED_ESCROW_CODE_HASH;
+  if (code !== wantCode) {
+    throw new Error(`${escrow} runs code ${code}, not ${wantCode}${opts["escrow-code-hash"] ? "" : " (the published escrow build)"}; add --escrow-code-hash ${code} only if you have checked that build`);
+  }
+  const judge = await deps.near.view(escrow, "get_judge", {});
+  const wantJudge = opts["judge-hash"] ?? committedJudgeHash();
+  if (judge?.hash !== wantJudge) {
+    throw new Error(`${escrow} runs judge ${judge?.hash}, not ${wantJudge}${opts["judge-hash"] ? "" : " (the published judge)"}; add --judge-hash ${judge?.hash} only if you have checked that build`);
+  }
+  deps.out(`escrow ${escrow}: code ${code}, judge ${judge.hash} (${byFlag ? "accepted by flag" : "the published builds"})`);
+  return judge;
+}
+
 // ---- calls ----
 const fnCall = (contractId, methodName, args, gasTgas, depositYocto) => ({ contractId, methodName, args, gasTgas, depositYocto });
 const printCall = (deps, signer, c) => deps.out(JSON.stringify(describeCall(signer, c), null, 2));
@@ -127,6 +149,7 @@ export async function create(opts, deps) {
   const c = fnCall(escrow, "create_job", args, cfg.GAS_TGAS.create_job, yocto(cfg.DEPOSIT_NEAR.create_job));
   printCall(deps, signer, c);
   if (opts["dry-run"]) return { dryRun: true };
+  await checkEscrow(opts, deps, escrow);
   if (clientSecret) {
     deps.out(`client X25519 secret saved to ${saveClientKey(deps.home, signer, args.client_pk, clientSecret)} (mode 0600)`);
   }
@@ -146,6 +169,7 @@ export async function fund(opts, deps) {
   const c = fnCall(escrow, "fund", { job_id: jobId }, cfg.GAS_TGAS.fund, yocto(amount));
   printCall(deps, signer, c);
   if (opts["dry-run"]) return { dryRun: true };
+  await checkEscrow(opts, deps, escrow);
   const r = await deps.near.call(signer, c);
   deps.out(`job ${jobId} funded with ${amount} NEAR; tx ${r.txHash}`);
   return { txHash: r.txHash };
@@ -160,6 +184,7 @@ export async function submit(opts, deps) {
   const c = fnCall(escrow, "submit", { job_id: jobId, deliverable }, cfg.GAS_TGAS.submit, yocto(cfg.DEPOSIT_NEAR.submit));
   printCall(deps, signer, c);
   if (opts["dry-run"]) return { dryRun: true };
+  await checkEscrow(opts, deps, escrow);
   const r = await deps.near.call(signer, c);
   deps.out(`job ${jobId} submitted (dh ${sha256hex(Buffer.from(deliverable, "utf8"))}); tx ${r.txHash}`);
   return { txHash: r.txHash };
@@ -183,7 +208,7 @@ export async function submitSealed(opts, deps) {
     judgeHash = opts["judge-hash"] ?? committedJudgeHash();
     profile = localProfile;
   } else {
-    judgeHash = (await deps.near.view(escrow, "get_judge", {}))?.hash;
+    judgeHash = (await checkEscrow(opts, deps, escrow)).hash;
     profile = await deps.near.view(escrow, "get_secrets_profile", { job_id: jobId });
     if (profile !== localProfile) throw new Error(`the escrow names secrets profile ${profile}, expected ${localProfile}`);
   }
@@ -244,8 +269,11 @@ export async function ruling(opts, deps) {
   let depositYocto;
   let depositNote;
   if (!dry) {
-    depositYocto = String((await deps.near.view(escrow, "get_judge", {}))?.min_ruling_deposit);
+    depositYocto = String((await checkEscrow(opts, deps, escrow))?.min_ruling_deposit);
     if (!/^[1-9]\d*$/.test(depositYocto)) throw new Error("get_judge returned no min_ruling_deposit");
+    if (BigInt(depositYocto) > BigInt(yocto(cfg.MAX_RULING_DEPOSIT_NEAR))) {
+      throw new Error(`the escrow asks ${describeDeposit(depositYocto)} per ruling, above the ${cfg.MAX_RULING_DEPOSIT_NEAR} NEAR cap; nothing was signed`);
+    }
   } else if (opts["min-deposit"] !== undefined) {
     depositYocto = yocto(String(opts["min-deposit"]));
   } else {
