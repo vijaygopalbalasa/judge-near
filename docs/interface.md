@@ -98,7 +98,7 @@ string.
   can never lock if nobody asks for one. From that moment no ruling can start (`request_ruling` refuses), and a job in
   Ruling refunds only one day later (`RULING_STALE_NS`), when no ruling can still be running: a ruling still running
   could otherwise publish `k` after the client took the refund. Only a lost callback leaves a job in Ruling that
-  long, so money still cannot lock. (Escrow v2, replaced on Nov 3 2026, let a Ruling job refund at the end of the
+  long, so money still cannot lock. (Escrow v2, replaced on Nov 2 2026, let a Ruling job refund at the end of the
   grace hour.)
 - The callback reads the raw promise result bytes (never a typed `#[callback_result]` that could panic on a
   surprise shape). OutLayer returns the guest's JSON as is when the run succeeds, and `null` for any failure.

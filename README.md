@@ -195,14 +195,14 @@ the owner. A third party's contract was not run; it would be another caller that
 
 `judgenear-escrow.testnet` was deployed and initialised in one transaction,
 [FfrcKX...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FfrcKXWFetEq4pUt7WvoztNFQ1jsQusb2bP1rpdWoYva&signer=judgenear-escrow.testnet),
-with `tools/deploy-escrow.mjs`. On Nov 3 the same tool replaced its code with v3, code only, [9YmrPJ...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=9YmrPJV8uRJhZ3YmVXkSmsiqhjjrpW3i52K9BFkNkXUS&signer=judgenear-escrow.testnet), to close a refund
+with `tools/deploy-escrow.mjs`. On Nov 2 at 21:55 UTC the same tool replaced its code with v3, code only, [9YmrPJ...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=9YmrPJV8uRJhZ3YmVXkSmsiqhjjrpW3i52K9BFkNkXUS&signer=judgenear-escrow.testnet), to close a refund
 race ([the limits](#security-model-and-honest-limits) say which). It checked that `get_judge` and all nine jobs read
 back unchanged. NEAR reports its code hash as `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`, the build in
 `contract/BUILD.md`. Its `get_judge` names judge v2 (URL pinned to commit fd3dcc6, SHA-256 `911b8a35...`). The jobs
 below ran under v2; their rulings verify the same way, because the verifier reads each ruling from its own
 transaction. The account still has its deploy key; see the limits below. Each job ran between `judgenear-client.testnet` and
 `judgenear-worker.testnet`, 0.5 NEAR each: jobs 0 to 4 step by step with `agents/jn.mjs` and jobs 5 to 8 by the two
-agents ([below](#two-agents-no-human)), on Nov 2 2026 under v2; job 9 with `agents/jn.mjs` on Nov 3, under v3.
+agents ([below](#two-agents-no-human)), on Nov 2 2026 under v2; job 9 with `agents/jn.mjs` at 22:05 UTC the same day, under v3.
 
 | Job | What happened | Ruling |
 |---|---|---|
@@ -273,7 +273,7 @@ delivery, after the worker's own check said it would fail.
 | Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for eleven rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4 and 9 re-run in full on their disclosed text |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused |
 | Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
-| Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 3), code hash matching `contract/BUILD.md` |
+| Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 2, 21:55 UTC), code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/jn.mjs`) | Works: create, fund, submit, sealed submit, ruling, open, verify, forget; checks criteria and deliveries with the judge before sending; checks the escrow's code and judge before any live step; every path run live on testnet |
 | Two agents (`agents/agent.mjs`) | Works: two passes and two fails live on testnet (jobs 5 to 8), and both outcomes offline with `npm run demo`; 82 offline tests in `agents/` |
 
@@ -341,7 +341,7 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
   start. While a ruling runs, no refund is possible. If no ruling lands before the hour ends (for example, if OutLayer
   is down), the client can take the refund even for a delivery that would have passed: money never locks, and a late
   worker can lose. A ruling lost for a whole day can be refunded too.
-- **The refund race, fixed on Nov 3:** escrow v2 let a client ask for a ruling after the grace hour and take the
+- **The refund race, fixed on Nov 2:** escrow v2 let a client ask for a ruling after the grace hour and take the
   refund a block later. OutLayer still ran the judge and published `k`, sealed to the client, while the escrow paid
   nobody. v3 closes it with the two rules above; `late_ruling_cannot_be_refunded_while_it_runs` replays the attack in
   the sandbox, with the ruling held open as OutLayer's yield holds it (it fails on v2 and passes on v3).
@@ -351,7 +351,7 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
 - **The escrow account:** OutLayer's keystore rule names the escrow account, so a worker also trusts the code that
   account runs. `agents/` checks its code hash and judge before every live step, but an account that still has a
   full-access key can have its code replaced by its owner. `judgenear-escrow.testnet` still has its deploy key; its
-  owner used it once, on Nov 3 2026, to deploy v3. The page shows this in amber and turns it green once the key is
+  owner used it once, on Nov 2 2026 at 21:55 UTC, to deploy v3. The page shows this in amber and turns it green once the key is
   gone. Settled jobs keep no key in the vault (the worker
   deletes it), so a replaced escrow could not read them.
 - **Testnet only** so far. No third-party users yet.

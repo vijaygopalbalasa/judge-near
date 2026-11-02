@@ -33,7 +33,7 @@ Checks run on the result: `strings` finds no absolute home-directory or source-c
 (registry paths read `/cargo/registry/...`), and a forced recompile with the same flags gives a
 byte-identical wasm.
 
-## Artifacts (Nov 3 2026, v3)
+## Artifacts (v3, deployed Nov 2 2026 at 21:55 UTC)
 
 ### Escrow: judge_escrow.wasm (deployable)
 - Path: `contract/target/near/judge_escrow.wasm`
@@ -46,14 +46,14 @@ byte-identical wasm.
 - v3 changes only the refund and ruling deadlines (no refund while a ruling runs, no ruling once the grace window
   ends); the stored state has the same layout, so v3 replaced v2 on the same account, code only.
 
-### Escrow v2 (deployed Nov 2 2026, replaced by v3 on Nov 3)
+### Escrow v2 (deployed Nov 2 2026, replaced by v3 the same day)
 - Size: 195834 bytes (the public-only v1 committed as 9c432bf was 179461 bytes, sha256 a0130b87...)
 - SHA-256: `b13cef3dd19730818f1db4ac85c135bfccf671eaca92315d853ed5f4f3b9f223`, base58
   `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`; built from commit 1c6a29f and earlier.
 
 ### Mock OutLayer: mock_outlayer.wasm (tests only, never deployed)
 - Path: `contract/mock-outlayer/target/near/mock_outlayer.wasm`
-- Size: 134322 bytes (with the hold mode that parks a yield, Nov 3 2026)
+- Size: 134322 bytes (with the hold mode that parks a yield, Nov 2 2026)
 - SHA-256 hex: `8591f9db1df0eb6d96273a8da681fd3884179d79c4c6b87754a2477dd0d80e46`
 - SHA-256 base58: `9zQKtiBJWZsGCqXtLJPV24nAnEkL5KVaJ89Popw6MSX7`
 

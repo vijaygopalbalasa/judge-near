@@ -3,7 +3,7 @@
 Each bug below was planted one at a time into `src/lib.rs` with the suite green beforehand, the suite
 was run, the bug was confirmed caught by at least one FAILING test, and the file was restored.
 
-**Result: 83 planted, 83 caught (100%)** (v3, Nov 3 2026; see "v3 round" below). Before v3: 79 planted, 79 caught. Everything except M39 was run by a harness against the unit
+**Result: 83 planted, 83 caught (100%)** (v3, Nov 2 2026 UTC; see "v3 round" below). Before v3: 79 planted, 79 caught. Everything except M39 was run by a harness against the unit
 suite (`cargo test --lib`, 111 tests at the time; a 112th, the callback gas check, was added after), in three foreground batches (M01 to M26, M27 to M52, M53 to
 M79): it applies one exact edit, runs the suite, records the failing tests, and restores the file.
 M39 (`#[private]`) cannot be observed by a unit test and was planted by hand against the sandbox
@@ -122,7 +122,7 @@ survived. The test now uses a fixed 5000-byte payload, and M33 is caught.
 | M79 | lib.rs:474 | secrets_ref profile names the wrong job | request_ruling_sealed_names_the_providers_secret |
 | M39 | lib.rs:517 | on_ruling: `#[private]` attribute removed | sandbox: on_ruling_is_private |
 
-## v3 round (Nov 3): M36, M37 re-pointed, M80 to M83 added
+## v3 round (Nov 2, UTC): M36, M37 re-pointed, M80 to M83 added
 
 v3 removes the refund race (no refund while a ruling runs; no ruling once the grace window ends). M36 and M37
 now target the Submitted arm of `claim_refund`, which lost `| JobState::Ruling`. Full re-run against the v3 source:
