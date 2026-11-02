@@ -153,7 +153,11 @@ function jobCard(job, jobs, allRulings) {
   card.append(el("p", "meta", `${formatNear(job.amount)} · ${job.client} → ${job.provider}${when ? ` · created ${when}` : ""}`));
   card.append(el("p", "outcome", jobOutcome(job)));
   const disclosed = disclosedDelivery(job, jobs);
-  if (disclosed) card.append(el("p", "sealed-note", `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
+  if (disclosed) {
+    card.append(el("p", "sealed-note", disclosed.published
+      ? "Disclosed: the README publishes this delivery's text, so its ruling can be re-run in full on it, with no key."
+      : `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
+  }
   // The delivery and the criteria fold away, so a phone shows each job's outcome and rulings without scrolling far.
   const more = el("details");
   more.append(el("summary", "", job.sealed ? "Delivery (sealed) and criteria" : "Delivery and criteria"));
