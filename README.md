@@ -21,6 +21,7 @@ AI Security & Defense.
 | OutLayer vault rules for sealed keys | Verified on testnet with `tools/keystore-probe` (transactions below) |
 | Browser verifier (`web/`) | Done, runs locally; re-runs public and sealed rulings |
 | Escrow contract (near-sdk 5), public and sealed jobs | Done: 112 unit tests, 13 tests in the NEAR sandbox, 79 of 79 planted bugs caught; testnet deployment next |
+| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open; 22 offline tests; live testnet run next |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -46,6 +47,7 @@ The second panel runs the judge on criteria and a deliverable you type.
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
+| `cd agents && npm ci && npm test` | 22 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 
 **3. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 
@@ -144,6 +146,7 @@ One limit of these probe runs: they were signed and called by the same account, 
 | `judge-wasm/` | The judge: Rust library and WASI binary, parity vectors, fuel corpus, build notes, mutation log |
 | `judge-wasm/release/judge.wasm` | The exact file OutLayer downloads, with its SHA-256 |
 | `contract/` | The escrow contract and a mock OutLayer for sandbox tests |
+| `agents/` | The command line tool a client and a worker use to run a job on testnet |
 | `web/` | The browser verifier and its tests |
 | `tools/keystore-probe/` | The probe used to check OutLayer's vault rules on testnet |
 | `docs/interface.md` | Input, verdict, hashes, contract rules and sealed mode, in one place |

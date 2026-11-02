@@ -1,0 +1,1 @@
+{"passThreshold":100,"checks":[{"kind":"length","params":{"min":20,"max":2000,"unit":"words"}},{"kind":"contains","params":{"all":["NEAR","USDC"],"wholeWords":true}}]}
