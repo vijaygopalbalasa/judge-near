@@ -24,7 +24,7 @@ because `--env` replaces the default list; cargo-near appends `--cfg near` itsel
 cd contract
 US=$'\x1f'
 cargo near build non-reproducible-wasm \
-  --env "CARGO_ENCODED_RUSTFLAGS=-Clink-arg=-s${US}--remap-path-prefix=$HOME/.cargo=/cargo${US}--remap-path-prefix=$PWD=/src"
+  --env "CARGO_ENCODED_RUSTFLAGS=-Clink-arg=-s${US}--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo${US}--remap-path-prefix=$PWD=/src"
 ```
 
 The mock is built with the same command run inside `contract/mock-outlayer`.

@@ -43,7 +43,7 @@ jobs:
       - name: the judge build reproduces judge-wasm/release/judge.wasm.sha256
         working-directory: judge-wasm
         run: |
-          CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
+          CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "${CARGO_HOME:-$HOME/.cargo}")" \
             cargo build --release --locked --target wasm32-wasip1 -v 2>&1 | grep -o "metadata=[0-9a-f]*" | sort -u | tr '\n' ' '
           echo
           shasum -a 256 target/wasm32-wasip1/release/judge.wasm
@@ -60,7 +60,7 @@ jobs:
       - name: build on Linux and print the hash (not checked)
         working-directory: judge-wasm
         run: |
-          CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
+          CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "${CARGO_HOME:-$HOME/.cargo}")" \
             cargo build --release --locked --target wasm32-wasip1 -v 2>&1 | grep -o "metadata=[0-9a-f]*" | sort -u | tr '\n' ' '
           echo
           sha256sum target/wasm32-wasip1/release/judge.wasm

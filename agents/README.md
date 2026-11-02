@@ -149,7 +149,7 @@ npm test
 They run offline: a fake chain and keystore stand in for the network, and each test uses a
 temporary home folder. `test/agent.test.mjs` runs both agents at once against a fake escrow
 and OutLayer that run the real judge through `../web/verify.js`. One test in
-`test/cli.test.mjs` runs the real judge (`../judge-wasm/release/judge.wasm`) under wasmtime
+`test/crypto.test.mjs` runs the real judge (`../judge-wasm/release/judge.wasm`) under wasmtime
 when it is installed.
 
 ## Run live

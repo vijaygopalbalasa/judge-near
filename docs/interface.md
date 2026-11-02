@@ -98,7 +98,7 @@ string.
 
 ## 6. Sealed jobs (the deliverable stays encrypted until it passes)
 
-A sealed job solves the "show me the work first" problem: the client never sees a failing delivery, and the
+A sealed job solves the "show me the work first" problem: the client never sees a failing delivery (only which of its own checks failed), and the
 worker is paid for a passing one in the same step that hands the client the key.
 
 ### 6.1 Keys and ciphertext

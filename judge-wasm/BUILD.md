@@ -10,7 +10,7 @@ on the 0x1f unit separator):
 
 ```sh
 cd judge-wasm
-CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "$HOME/.cargo")" \
+CARGO_ENCODED_RUSTFLAGS="$(printf -- '--remap-path-prefix=%s=/src\037--remap-path-prefix=%s=/cargo' "$(pwd)" "${CARGO_HOME:-$HOME/.cargo}")" \
   cargo build --release --locked --target wasm32-wasip1
 ```
 
