@@ -63,6 +63,7 @@
     .ruling .summary { margin-top: 10px; font-size: 0.92rem; }
     footer { color: var(--muted); font-size: 0.88rem; }
     p.hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
+    .summary .explain { display: block; margin-top: 4px; font-weight: 400; font-size: 0.88rem; color: var(--muted); }
     a { color: var(--accent); }
   </style>
 </head>
@@ -86,12 +87,13 @@
   <section>
     <h2>2. Re-run any ruling from its transaction</h2>
     <form id="tx-form">
-      <p class="hint">Any ruling transaction works. The default is the first run of the judge on OutLayer (judge v1,
-        Nov 1 2026), called directly by judgeprotocol.testnet before the escrow existed.</p>
+      <p class="hint">Any ruling transaction works; the default is job 0's ruling. The judge's very first run on OutLayer
+        (judge v1, Nov 1 2026, called directly before the escrow existed) is
+        <a href="?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&amp;signer=judgeprotocol.testnet">4VFvzo...</a>.</p>
       <label for="tx">Transaction hash</label>
-      <input id="tx" required value="4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk" autocomplete="off" spellcheck="false">
+      <input id="tx" required value="G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1" autocomplete="off" spellcheck="false">
       <label for="signer">Account that signed it</label>
-      <input id="signer" required value="judgeprotocol.testnet" autocomplete="off" spellcheck="false">
+      <input id="signer" required value="judgenear-worker.testnet" autocomplete="off" spellcheck="false">
       <label for="key">Sealed jobs only: the deliverable key (64 hex), after the client opened it</label>
       <input id="key" placeholder="leave empty for public jobs" autocomplete="off" spellcheck="false">
       <button id="tx-go" type="submit">Verify this ruling</button>

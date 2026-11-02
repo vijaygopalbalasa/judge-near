@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction } from "../verify.js";
+import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, publishedJudgeName, reportOutcome, rpcCall, rulingJob, runJudge, sha256Hex, summarizeTx, verifyRuling, verifyTransaction } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -462,4 +462,30 @@ test("summarizeTx reads who signed what, the outcome, and each receipt's executo
   const failed = summarizeTx({ ...tx, status: { Failure: { ActionError: { kind: { FunctionCallError: { ExecutionError: "Smart contract panicked: no" } } } } } });
   assert.equal(failed.status, "failure");
   assert.match(failed.failure, /Smart contract panicked: no/);
+});
+
+test("a host that does not answer within the timeout is skipped, and the next one asked", async () => {
+  const asked = [];
+  const fetchImpl = (url, init) => {
+    asked.push(url);
+    if (url === "https://slow.example.test") {
+      return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))));
+    }
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ jsonrpc: "2.0", id: "verify", result: { fine: true } }) });
+  };
+  const t0 = Date.now();
+  const got = await rpcCall(["https://slow.example.test", "https://fast.example.test"], "status", [], fetchImpl, { timeoutMs: 60 });
+  assert.deepEqual(got, { fine: true });
+  assert.deepEqual(asked, ["https://slow.example.test", "https://fast.example.test"]);
+  assert.ok(Date.now() - t0 < 2000);
+  await assert.rejects(rpcCall(["https://slow.example.test"], "status", [], fetchImpl, { timeoutMs: 30 }), /slow\.example\.test: no answer within 0\.03 s/);
+});
+
+test("summarizeTx reads what OutLayer did: refused with its message, or ran with its resources", () => {
+  const ev = (data) => `EVENT_JSON:${JSON.stringify({ standard: "near-outlayer", version: "1.0.0", event: "execution_completed", data: [data] })}`;
+  const refused = summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "outlayer.testnet", logs: [ev({ success: false, error_message: "Access denied by access condition", resources_used: { instructions: 0, time_ms: 0 } })], status: { SuccessValue: "" } } }] });
+  assert.deepEqual(refused.outlayer, [{ success: false, error: "Access denied by access condition", instructions: 0, timeMs: 0 }]);
+  const ran = summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [{ outcome: { executor_id: "outlayer.testnet", logs: [ev({ success: true, resources_used: { instructions: 121432, time_ms: 9 } })], status: { SuccessValue: "" } } }] });
+  assert.deepEqual(ran.outlayer, [{ success: true, error: undefined, instructions: 121432, timeMs: 9 }]);
+  assert.deepEqual(summarizeTx({ transaction: {}, status: { SuccessValue: "" }, receipts_outcome: [] }).outlayer, []);
 });

@@ -31,6 +31,17 @@ export const RULINGS = Object.freeze([
   { job: 8, tx: "42xXF6fnYPHWEuqc1HUHK7fPDJ9MmwWXXdFYB2SuCq72", signer: "judgenear-worker.testnet" },
 ].map((r) => Object.freeze(r)));
 
+/** How secret each sealed demo job's delivery is (README, "The escrow on testnet"). */
+export const JOB_NOTES = Object.freeze({
+  2: "Demo: seals job 0's public text (same dh), so its content is not secret.",
+  3: "Demo: seals job 1's public text (same dh), so its content is not secret.",
+  4: "Demo: seals job 0's public text (same dh), so its content is not secret.",
+  5: "Demo: a report built only from public facts, with no nonce, so its dh can be matched by guessing: not secret.",
+  6: "Demo: a report built only from public facts, with no nonce, so its dh can be matched by guessing: not secret.",
+  7: "The report ends with a random nonce, so its dh gives nothing away.",
+  8: "The report ends with a random nonce, so its dh gives nothing away.",
+});
+
 const PAGE_SIZE = 10;
 const MAX_PAGES = 100;
 
@@ -94,6 +105,13 @@ export function formatNear(yocto) {
   return `${whole}${fraction ? `.${fraction}` : ""} NEAR`;
 }
 
+/** A nanosecond timestamp (a job's created_at_ns) as "YYYY-MM-DD HH:MM UTC"; "" when it is not one. */
+export function formatTime(ns) {
+  if (typeof ns !== "string" || !/^\d+$/.test(ns)) return "";
+  const d = new Date(Number(BigInt(ns) / 1_000_000n));
+  return `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 16)} UTC`;
+}
+
 /** What happened to a job, in one line. */
 export function jobOutcome(job) {
   switch (job.state) {
@@ -113,4 +131,6 @@ export function jobOutcome(job) {
       return `Unknown state: ${job.state}`;
   }
 }
+
+
 

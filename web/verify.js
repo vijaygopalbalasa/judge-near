@@ -11,6 +11,9 @@
 
 import { runWasi } from "./wasi.js";
 
+/** How long one RPC host may take to answer before the next one is asked. */
+export const RPC_TIMEOUT_MS = 10_000;
+
 /** NEAR testnet archival RPC nodes, tried in order: FastNEAR's, then NEAR's own. */
 export const TESTNET_ARCHIVAL_RPCS = Object.freeze(["https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org"]);
 
@@ -56,17 +59,21 @@ export async function expectedEh(verdict) {
  * body that is not JSON, or a JSON-RPC error (a node may not have the transaction). When every host
  * fails, the error names each host and what went wrong there.
  */
-export async function rpcCall(rpc, method, params, fetchImpl = globalThis.fetch) {
+export async function rpcCall(rpc, method, params, fetchImpl = globalThis.fetch, { timeoutMs = RPC_TIMEOUT_MS } = {}) {
   const hosts = Array.isArray(rpc) ? rpc : [rpc];
   if (hosts.length === 0) throw new Error("RPC: no host to ask");
   const failures = [];
   for (const host of hosts) {
     let why;
+    // A host that hangs is skipped like one that fails: abort it after timeoutMs and ask the next.
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
     try {
       const res = await fetchImpl(host, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: "verify", method, params }),
+        signal: abort.signal,
       });
       if (res.ok === false) {
         why = `HTTP ${res.status}`;
@@ -83,7 +90,9 @@ export async function rpcCall(rpc, method, params, fetchImpl = globalThis.fetch)
         else return body.result;
       }
     } catch (e) {
-      why = e?.message ?? String(e);
+      why = abort.signal.aborted ? `no answer within ${timeoutMs / 1000} s` : e?.message ?? String(e);
+    } finally {
+      clearTimeout(timer);
     }
     failures.push(`${host}: ${why}`);
   }
@@ -265,7 +274,12 @@ export function summarizeTx(tx) {
       returned,
     };
   });
-  return { hash: t.hash, signer: t.signer_id, receiver: t.receiver_id, actions, status: failed ? "failure" : "success", failure: failed ? JSON.stringify(status.Failure) : undefined, receipts };
+  // What OutLayer did, from its execution_completed events: refused (with its message) or ran (with its resources).
+  const outlayer = receipts.flatMap((r) => r.events.filter((e) => e.standard === "near-outlayer" && e.event === "execution_completed")).map((e) => {
+    const d = Array.isArray(e.data) ? e.data[0] ?? {} : e.data ?? {};
+    return { success: d.success === true, error: d.error_message ?? undefined, instructions: d.resources_used?.instructions, timeMs: d.resources_used?.time_ms };
+  });
+  return { hash: t.hash, signer: t.signer_id, receiver: t.receiver_id, actions, status: failed ? "failure" : "success", failure: failed ? JSON.stringify(status.Failure) : undefined, receipts, outlayer };
 }
 
 /** Run the judge bytes on one input; returns the verdict text it prints. */

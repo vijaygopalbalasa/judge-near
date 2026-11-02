@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ESCROW, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, formatNear, jobOutcome, parseDeepLink, readEscrow } from "../escrow.js";
+import { ESCROW, JOB_NOTES, PUBLISHED_ESCROW_CODE_HASH, RULINGS, TESTNET_STATE_RPCS, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "../escrow.js";
 import { TESTNET_ARCHIVAL_RPCS } from "../verify.js";
 import * as agentsConfig from "../../agents/lib/config.mjs";
 
@@ -168,4 +168,19 @@ test("parseDeepLink reads ?tx=&signer= for the verifier, and refuses anything th
   for (const bad of ["", "?tx=abc&signer=judgenear-worker.testnet", `?tx=${tx}`, `?tx=${tx}&signer=Not An Account`, `?tx=${tx}0OIl&signer=a.testnet`, `?signer=a.testnet`]) {
     assert.equal(parseDeepLink(bad), null, bad);
   }
+});
+
+test("formatTime shows a job's nanosecond timestamp as a UTC minute", () => {
+  assert.equal(formatTime("1793641487945000000"), "2026-11-02 17:44 UTC");
+  assert.equal(formatTime("0"), "1970-01-01 00:00 UTC");
+  assert.equal(formatTime("not a time"), "");
+});
+
+test("every sealed demo job on the page says how secret its delivery is, as the README does", () => {
+  assert.deepEqual(Object.keys(JOB_NOTES).map(Number), [2, 3, 4, 5, 6, 7, 8]);
+  for (const n of [2, 3, 4, 5, 6]) assert.match(JOB_NOTES[n], /not secret/, `job ${n}`);
+  for (const n of [7, 8]) assert.match(JOB_NOTES[n], /random nonce/, `job ${n}`);
+  for (const n of Object.keys(JOB_NOTES).map(Number)) assert.ok(RULINGS.some((r) => r.job === n), `job ${n} has a ruling listed`);
+  const prose = readme.replace(/\s+/g, " ");
+  assert.ok(prose.includes("Only jobs 7 and 8 are unguessable."));
 });

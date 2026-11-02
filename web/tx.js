@@ -1,6 +1,6 @@
 // Page wiring for web/tx.html: one transaction in plain terms. The reading and summarising live in verify.js.
 import { parseDeepLink } from "./escrow.js";
-import { fetchTransaction, findRuling, summarizeTx } from "./verify.js";
+import { PUBLISHED_JUDGES, fetchTransaction, findRuling, summarizeTx } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,8 +36,10 @@ async function main() {
   try {
     const tx = await fetchTransaction(link.tx, link.signer);
     const sum = summarizeTx(tx);
-    status.className = sum.status === "success" ? "ok" : "bad";
-    status.textContent = sum.status === "success" ? "The transaction succeeded." : "The transaction failed.";
+    const refused = sum.outlayer.some((o) => !o.success);
+    status.className = sum.status === "success" && !refused ? "ok" : "bad";
+    status.textContent = sum.status !== "success" ? "The transaction failed."
+      : refused ? "The transaction went through, and OutLayer refused to run the wasm (below)." : "The transaction succeeded.";
     const head = el("section");
     head.append(el("h2", "", "Transaction"), row("hash", link.tx), row("signer", sum.signer), row("receiver", sum.receiver));
     for (const a of sum.actions) {
@@ -55,13 +57,20 @@ async function main() {
       }
     }
     if (sum.failure) head.append(row("failure", sum.failure));
+    for (const o of sum.outlayer) {
+      head.append(o.success
+        ? row("OutLayer", `ran the wasm: ${o.instructions ?? "?"} instructions, ${o.timeMs ?? "?"} ms`, "mono ok")
+        : row("OutLayer", `refused: ${o.error ?? "no reason given"}`, "mono bad"));
+    }
     const ruling = findRuling(tx);
-    if (ruling) {
+    if (ruling && PUBLISHED_JUDGES.has(ruling.source?.hash)) {
       const p = el("p");
       const a = el("a", "", "Re-run this ruling in the verifier");
       a.href = `./?tx=${encodeURIComponent(link.tx)}&signer=${encodeURIComponent(link.signer)}`;
-      p.append("This transaction asked OutLayer to run a wasm. ", a, ".");
+      p.append(`This transaction asked OutLayer to run ${PUBLISHED_JUDGES.get(ruling.source.hash)}. `, a, ".");
       head.append(p);
+    } else if (ruling) {
+      head.append(el("p", "", `This transaction asked OutLayer to run a wasm that is not a published judge build (sha256 ${ruling.source?.hash ?? "unknown"}).`));
     }
     const receipts = el("section");
     receipts.append(el("h2", "", `Receipts (${sum.receipts.length})`));

@@ -1,9 +1,10 @@
 // Page wiring for web/index.html. All checking logic lives in verify.js; reading the escrow in escrow.js.
-import { ESCROW, RULINGS, formatNear, jobOutcome, parseDeepLink, readEscrow } from "./escrow.js";
+import { ESCROW, JOB_NOTES, RULINGS, formatNear, formatTime, jobOutcome, parseDeepLink, readEscrow } from "./escrow.js";
 import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
 const RUN_LIMIT_MS = 10_000;
+const MAX_CARDS = 60; // newest first; anyone can create jobs, so a flood of them cannot bury the page
 const MARKS = { ok: "✓", bad: "✗", skip: "○" };
 
 /** Run the judge in a worker with a time limit (the same WASI host as verify.js uses in Node). */
@@ -48,19 +49,24 @@ function renderSteps(list, steps) {
   list.replaceChildren(...steps.map((s) => markItem(s.ok === true ? "ok" : s.ok === null ? "skip" : "bad", s.label, s.detail)));
 }
 
-/** The one-line summary of a report: verified, checked without the key, or not verified. */
+/** The one-line summary of a report (verified, checked without the key, or not verified) and what it means. */
 function showOutcome(summary, report) {
   const outcome = reportOutcome(report);
+  let line;
+  let meaning = "";
   if (outcome === "verified") {
     summary.className = "summary ok";
-    summary.textContent = `Verified: ${report.steps.find((s) => s.id === "published").detail} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`;
+    line = `Verified: ${report.steps.find((s) => s.id === "published").detail} computes exactly this ruling (pass: ${report.local.pass}, score: ${report.local.score}).`;
+    meaning = "The exact judge OutLayer ran, downloaded and checked by its SHA-256, gives the same verdict here on the same input, field by field.";
   } else if (outcome === "needs-key") {
     summary.className = "summary note";
-    summary.textContent = "Consistent, not re-run: every check that needs no key passed. Re-running the score needs the delivery key.";
+    line = "Consistent, not re-run: every check that needs no key passed. Re-running the score needs the delivery key.";
+    meaning = "Checked without the key: the transaction asked for this job, the judge is a published build, and the verdict's hashes match the job's criteria, the worker's commitment and the verdict itself.";
   } else {
     summary.className = "summary bad";
-    summary.textContent = "Not verified: see the step that failed below.";
+    line = "Not verified: see the step that failed below.";
   }
+  summary.replaceChildren(document.createTextNode(line), ...(meaning ? [el("span", "explain", meaning)] : []));
 }
 
 async function runCheck(button, summary, list, check) {
@@ -122,13 +128,15 @@ function jobCard(job) {
   const head = el("div", "job-head");
   head.append(el("h3", "", `Job ${job.id}`), el("span", job.sealed ? "badge sealed" : "badge", job.sealed ? "sealed" : "public"), el("span", `badge ${job.state}`, job.state));
   card.append(head);
-  card.append(el("p", "meta", `${formatNear(job.amount)} · ${job.client} → ${job.provider}`));
+  const when = formatTime(job.created_at_ns);
+  card.append(el("p", "meta", `${formatNear(job.amount)} · ${job.client} → ${job.provider}${when ? ` · created ${when}` : ""}`));
   card.append(el("p", "outcome", jobOutcome(job)));
   if (job.sealed) {
     const note = job.deliverable_ct
       ? `Delivery: sealed, on chain only as ciphertext (${job.deliverable_ct.length} base64 characters); the worker's commitment is dh ${short(job.dh, 8)}`
       : "Delivery: sealed; nothing delivered yet.";
     card.append(el("p", "sealed-note", note));
+    if (JOB_NOTES[job.id]) card.append(el("p", "sealed-note", JOB_NOTES[job.id]));
   } else if (job.deliverable) {
     const d = el("details");
     d.append(el("summary", "", `Delivery (public, ${job.deliverable.length} characters)`), el("pre", "", job.deliverable));
@@ -160,8 +168,9 @@ async function loadJobs() {
         : markItem("skip", `Still has ${escrow.fullAccessKeys === 1 ? "a full-access key" : `${escrow.fullAccessKeys} full-access keys`}: its owner could replace the code`, "see the README, \"Security model and honest limits\""),
     );
     status.className = "summary";
-    status.textContent = `${escrow.jobs.length} jobs, read at block ${escrow.blockHeight}.`;
-    $("jobs").replaceChildren(...escrow.jobs.map(jobCard));
+    const shown = escrow.jobs.slice(-MAX_CARDS).reverse();
+    status.textContent = `${escrow.jobs.length} jobs, read at block ${escrow.blockHeight}; newest first${escrow.jobs.length > MAX_CARDS ? `, the ${MAX_CARDS} newest shown` : ""}.`;
+    $("jobs").replaceChildren(...shown.map(jobCard));
   } catch (err) {
     status.className = "summary bad";
     status.textContent = `Could not read the escrow: ${err.message}`;
