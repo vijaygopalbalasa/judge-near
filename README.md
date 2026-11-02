@@ -2,7 +2,8 @@
 
 **Sealed, judge-gated escrow for agent work on NEAR.** A client locks payment and writes the rules a delivery
 must meet. A deterministic judge, run by [OutLayer](https://outlayer.ai) on Intel TDX workers, checks the delivery,
-and the escrow pays the worker or refunds the client from the verdict. Anyone can re-run the check in a browser.
+and the escrow pays the worker or refunds the client from the verdict. Anyone can re-run the check in a browser:
+[vijaygopalbalasa.github.io/judge-near/web](https://vijaygopalbalasa.github.io/judge-near/web/).
 
 In **sealed mode** the delivery stays encrypted until it passes. The worker's key is locked in OutLayer's vault so
 that only this exact judge build, called through this escrow, can read it. On a pass the worker is paid and the
@@ -41,13 +42,14 @@ commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Any rulin
 (FastNEAR's, then NEAR's own), because regular testnet nodes drop transactions after about 30 hours; set
 `JN_ARCHIVAL_RPC` to use another.
 
-**2. Or in your browser.** From the repository root:
+**2. Or in your browser.** Open https://vijaygopalbalasa.github.io/judge-near/web/ (this repository as it is, served by
+GitHub Pages), or serve it yourself from the repository root:
 
 ```sh
 python3 -m http.server 8080
 ```
 
-Open http://localhost:8080/web/. Panel 1 reads the escrow live from testnet. Expected: two green checks ("Runs the
+and open http://localhost:8080/web/. Panel 1 reads the escrow live from testnet. Expected: two green checks ("Runs the
 published escrow build", code hash `Cvs46Mpm96grgs3GdU4Cpyx3PTRiJZifHDXrWRm2qpga`, and "Its judge is judge v2 (public
 and sealed jobs), commit fd3dcc6"), "7 jobs, read at block" with the block number, and one card per job with its
 state, amount, parties and outcome. Press **Verify** on job 0's ruling: the page reads the transaction from the same
