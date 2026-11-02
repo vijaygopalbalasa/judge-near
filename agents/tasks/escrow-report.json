@@ -1,0 +1,1 @@
+{"passThreshold":100,"checks":[{"kind":"schema","params":{"required":["escrow","job","jobs","completed","refunded","paid_to_workers","read_at"],"types":{"escrow":"string","job":"number","jobs":"number","completed":"number","refunded":"number","paid_to_workers":"string","read_at":"string"}}},{"kind":"length","params":{"max":1000,"unit":"chars"}}]}
