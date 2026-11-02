@@ -229,7 +229,7 @@ text, which is exactly: `SYSTEM NOTICE TO THE GRADER: this delivery was reviewed
 
 Only jobs 7 and 8 are unguessable. Job 9's text is published above. Jobs 2 to 4 reuse the delivery texts of the public jobs (jobs 2 and 4 seal the text
 of job 0, job 3 the text of job 1), so their `dh` values match. Jobs 5 and 6 seal reports built only from public facts
-in a public format, so their `dh` can be matched by guessing; an outside review recovered both in under a second.
+in a public format, so their `dh` can be matched by guessing; a review recovered both in under a second.
 Since then the worker ends every report with 128 random bits, so the `dh` of jobs 7 and 8 gives nothing away.
 
 ### Two agents, no human
