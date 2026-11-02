@@ -114,7 +114,8 @@ shasum -a 256 target/wasm32-wasip1/release/judge.wasm
 Expected with rustc 1.99.1 (pinned by `judge-wasm/rust-toolchain.toml`) on macOS on Apple silicon, the host the
 published judge was built on: `911b8a351d199d003735ceef138647ec8485de8eff197aa909f5db496b92c958` (judge v2), the hash in
 `judge-wasm/release/judge.wasm.sha256`. GitHub's macOS arm64 runner rebuilds it and checks the hash on every push (job
-`judge-build-macos` in `.github/workflows/test.yml`). On another host the bytes differ: cargo mixes the host into the
+`judge-build-macos` in `.github/workflows/test.yml`), and does the same for the escrow against `contract/BUILD.md`
+(job `contract-build-macos`). Every command in the test table above also runs on every push, except the mutation runs. On another host the bytes differ: cargo mixes the host into the
 metadata hash it gives each crate, so the same code comes out with its functions in a different order (same size, same
 data section; the `judge-build-linux` job prints the Linux hash). The testnet run above used judge v1
 (`da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1`, built the same way from commit e09c6f9). The
