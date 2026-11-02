@@ -21,7 +21,7 @@ AI Security & Defense.
 | OutLayer vault rules for sealed keys | Verified on testnet with `tools/keystore-probe` (transactions below) |
 | Verifier (`web/`, and `agents/jn.mjs verify` in a terminal) | Done: re-runs public rulings, sealed rulings with the delivery key, and key_missing rulings without one |
 | Escrow contract (near-sdk 5), public and sealed jobs | Done: 112 unit tests, 13 tests in the NEAR sandbox, 79 of 79 planted bugs caught; deployed on testnet as `judgenear-escrow.testnet`, code hash matching `contract/BUILD.md` |
-| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; 47 offline tests; every path run live on testnet ([below](#the-escrow-on-testnet)) |
+| Agent command line tool (`agents/`) | Done: create, fund, submit, sealed submit through OutLayer's keystore, ruling, open, verify; stores a sealed key again after key_missing; checks the escrow's code and judge before any live step; 51 offline tests; every path run live on testnet ([below](#the-escrow-on-testnet)) |
 
 ## Try it in two minutes (no NEAR account needed)
 
@@ -36,7 +36,9 @@ It reads the testnet transaction in which the escrow asked OutLayer for a ruling
 ran, checks its SHA-256 against the hash OutLayer was told to run and against the published build, re-runs it on the
 same input and compares the verdicts. Expected: ten `ok` lines and "Verified: judge v2 (public and sealed jobs),
 commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Any ruling in
-[the table below](#the-escrow-on-testnet) works the same way.
+[the table below](#the-escrow-on-testnet) works the same way. The transaction is read from a NEAR archival node
+(FastNEAR's, then NEAR's own), because regular testnet nodes drop transactions after about 30 hours; set
+`JN_ARCHIVAL_RPC` to use another.
 
 **2. Or in your browser.** From the repository root:
 
@@ -44,9 +46,9 @@ commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)." Any rulin
 python3 -m http.server 8080
 ```
 
-Open http://localhost:8080/web/ and press **Verify this ruling**. The page reads the testnet transaction, downloads
-the exact wasm OutLayer ran, checks its SHA-256 against the hash OutLayer was told to run and against the published
-build, runs it in your browser on the same input, and compares the verdicts. Expected: ten green checks and
+Open http://localhost:8080/web/ and press **Verify this ruling**. The page reads the testnet transaction from the
+same archival nodes, downloads the exact wasm OutLayer ran, checks its SHA-256 against the hash OutLayer was told to
+run and against the published build, runs it in your browser on the same input, and compares the verdicts. Expected: ten green checks and
 "Verified: judge v1 (public jobs), commit e09c6f9 computes exactly this ruling (pass: true, score: 100)."
 The second panel runs the judge on criteria and a deliverable you type.
 
@@ -55,11 +57,11 @@ The second panel runs the judge on criteria and a deliverable you type.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (Rust 1.95 or newer) |
-| `node --test web/test/*.test.mjs` | 21 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 28 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 of them sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib` | 112 passed (Rust 1.95 or newer) |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 13 passed; needs `rustup target add wasm32-unknown-unknown` and downloads the NEAR sandbox on the first run |
-| `cd agents && npm ci && npm test` | 47 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
+| `cd agents && npm ci && npm test` | 51 passed (Node 22 or newer); one test runs the real judge under `wasmtime` |
 
 **4. Reproduce the judge build.** With `rustup target add wasm32-wasip1`:
 
@@ -134,9 +136,11 @@ The full contract between the parts is in [`docs/interface.md`](docs/interface.m
 | A caller rule that does not name the caller was refused ("Access denied by access condition") | [5b7BnF...](https://testnet.nearblocks.io/txns/5b7BnFoMBK5MFx1LXMqE7bNgAYwiQRC1xEwpJmX3Prfh) |
 
 One limit of these probe runs: they were signed and called by the same account, so they cannot tell the
-`Predecessor` rule apart from a plain whitelist. The escrow runs below settle the positive case: in jobs 2 and 4 the
-worker signed the request, the escrow contract called OutLayer, and the vault handed the key to the judge, so the rule
-was checked against the calling contract, not the signer. A different contract being refused was not run live.
+`Predecessor` rule apart from a plain whitelist. Job 3 below settles the positive case: the client signed that sealed
+ruling and owns nothing in the vault, the escrow contract was the caller OutLayer recorded, and the judge still read the
+worker's key and decrypted the delivery (it scored it 50 instead of answering `key_missing`). So the rule was checked
+against the calling contract, not the signer. Jobs 2 and 4 were signed by the worker, who owns the secret, so a rule
+that always lets the owner in would explain them too. A different contract being refused was not run live.
 
 ### The escrow on testnet
 

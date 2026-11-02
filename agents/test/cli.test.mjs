@@ -12,7 +12,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { decryptDeliverable, encryptDeliverable, publicFromSecret, sealK } from "../../judge-wasm/scripts/sealed.mjs";
 import { COMMANDS, rulingResult } from "../lib/commands.mjs";
-import { PUBLISHED_ESCROW_CODE_HASH } from "../lib/config.mjs";
+import { ARCHIVAL_RPC_URLS, PUBLISHED_ESCROW_CODE_HASH } from "../lib/config.mjs";
+import { TESTNET_ARCHIVAL_RPCS } from "../../web/verify.js";
 import { eciesDecrypt, secretsProfile } from "../lib/keystore.mjs";
 import { loadAccountKey } from "../lib/near.mjs";
 import { loadOrCreateK, saveClientKey } from "../lib/secrets-store.mjs";
@@ -83,7 +84,7 @@ const DRY_RUNS = [
   ["ruling", { as: PROVIDER, job: "0" }, ["request_ruling", "300 Tgas", "get_judge.min_ruling_deposit"]],
   ["open", { as: CLIENT, job: "0" }, ["get_job"]],
   ["status", { job: "0" }, ["get_job"]],
-  ["verify", { tx: "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", signer: PROVIDER }, ["G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", "re-run"]],
+  ["verify", { tx: "G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", signer: PROVIDER }, ["G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1", "re-run", "https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org", "JN_ARCHIVAL_RPC"]],
 ];
 
 for (const [command, opts, expected] of DRY_RUNS) {
@@ -518,9 +519,9 @@ test("verify a public ruling: prints each check and the result, loads no key eve
   const { verifier, seen } = fakeVerifier(publicRuling);
   const { deps, lines } = makeDeps({ home, near: OFFLINE_NEAR, fetch: offline });
   deps.verifier = verifier;
-  deps.env.JN_RPC = "https://rpc.example.test";
+  deps.env.JN_ARCHIVAL_RPC = "https://archive.example.test";
   await COMMANDS.verify({ tx: TX, signer: PROVIDER, as: CLIENT }, deps);
-  assert.deepEqual(seen.fetch, [{ txHash: TX, signer: PROVIDER, rpc: "https://rpc.example.test" }]);
+  assert.deepEqual(seen.fetch, [{ txHash: TX, signer: PROVIDER, rpc: "https://archive.example.test" }]);
   assert.deepEqual(seen.verify[0].env, {}, "a public ruling never gets a key");
   const text = lines.join("\n");
   assert.match(text, /ok {3}That hash is a published Judge on NEAR build \| judge v2/);
@@ -602,4 +603,53 @@ test("verify refuses a malformed transaction hash and a transaction with no OutL
   await assert.rejects(COMMANDS.verify({ tx: "not-a-hash", signer: PROVIDER }, deps), /--tx needs a transaction hash/);
   deps.verifier = fakeVerifier(null).verifier;
   await assert.rejects(COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps), /did not ask OutLayer to run anything/);
+});
+
+// ---- verify reads old transactions from archival nodes ----
+// Regular testnet nodes drop transactions after about 30 hours; live commands keep JN_RPC.
+
+const ARCHIVAL = ["https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org"];
+
+test("verify reads the chain from the archival nodes by default, the same list the browser verifier uses, and ignores JN_RPC", async () => {
+  assert.deepEqual([...ARCHIVAL_RPC_URLS], ARCHIVAL);
+  assert.deepEqual([...ARCHIVAL_RPC_URLS], [...TESTNET_ARCHIVAL_RPCS], "agents/lib/config.mjs and web/verify.js list the same hosts");
+  const { verifier, seen } = fakeVerifier(publicRuling);
+  const { deps } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  deps.verifier = verifier;
+  deps.env.JN_RPC = "https://rpc.example.test"; // for live commands; verify must not use it
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps);
+  assert.deepEqual([...seen.fetch[0].rpc], ARCHIVAL);
+  assert.deepEqual([...seen.verify[0].rpc], ARCHIVAL);
+});
+
+test("verify uses JN_ARCHIVAL_RPC when set, for the transaction and for the escrow job, never JN_RPC", async () => {
+  const { verifier, seen } = fakeVerifier(publicRuling);
+  const { deps } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  deps.verifier = verifier;
+  deps.env.JN_RPC = "https://rpc.example.test";
+  deps.env.JN_ARCHIVAL_RPC = "https://archive.example.test";
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER }, deps);
+  assert.equal(seen.fetch[0].rpc, "https://archive.example.test");
+  assert.equal(seen.verify[0].rpc, "https://archive.example.test");
+});
+
+test("verify --dry-run names the archival hosts, or JN_ARCHIVAL_RPC when it is set", async () => {
+  const { deps, lines } = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  deps.env.JN_RPC = "https://rpc.example.test";
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, "dry-run": true }, deps);
+  const shown = JSON.parse(lines.join("\n")).verify;
+  assert.deepEqual(shown.archival_rpc, ARCHIVAL);
+  assert.ok(!lines.join("\n").includes("rpc.example.test"), "verify never reads JN_RPC");
+  const set = makeDeps({ home: tempHome(), near: OFFLINE_NEAR, fetch: offline });
+  set.deps.env.JN_ARCHIVAL_RPC = "https://archive.example.test";
+  await COMMANDS.verify({ tx: TX, signer: PROVIDER, "dry-run": true }, set.deps);
+  assert.deepEqual(JSON.parse(set.lines.join("\n")).verify.archival_rpc, ["https://archive.example.test"]);
+});
+
+test("jn.mjs --help says where verify reads from and how to change it", () => {
+  const r = spawnSync(process.execPath, [path.join(AGENTS, "jn.mjs"), "--help"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /archival/);
+  assert.match(r.stdout, /JN_ARCHIVAL_RPC/);
+  assert.match(r.stdout, /JN_RPC/);
 });

@@ -5,10 +5,14 @@
 // against the hash OutLayer was told to run, runs it locally through the WASI host in wasi.js,
 // and compares the local verdict with the one OutLayer returned on chain, field by field. It also
 // recomputes the evidence hash `eh` (docs/interface.md, section 3).
+//
+// It reads the chain from NEAR archival nodes: regular testnet nodes drop transactions after about
+// 30 hours, so a ruling from last week can only be read from an archival node.
 
 import { runWasi } from "./wasi.js";
 
-export const TESTNET_RPC = "https://rpc.testnet.near.org";
+/** NEAR testnet archival RPC nodes, tried in order: FastNEAR's, then NEAR's own. */
+export const TESTNET_ARCHIVAL_RPCS = Object.freeze(["https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org"]);
 
 /** Only receipts executed by OutLayer's own contracts count; any contract can write a log that looks like theirs. */
 export const OUTLAYER_ACCOUNTS = new Set(["outlayer.testnet", "outlayer.near"]);
@@ -46,20 +50,48 @@ export async function expectedEh(verdict) {
   return sha256Hex(new TextEncoder().encode(`${canonicalPrefix(verdict)}}`));
 }
 
-export async function fetchTransaction(txHash, signer, { rpc = TESTNET_RPC, fetchImpl = globalThis.fetch } = {}) {
-  const res = await fetchImpl(rpc, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "verify",
-      method: "tx",
-      params: { tx_hash: txHash, sender_account_id: signer, wait_until: "FINAL" },
-    }),
-  });
-  const body = await res.json();
-  if (body.error) throw new Error(`RPC: ${body.error.cause?.name ?? body.error.message ?? "error"}`);
-  return body.result;
+/**
+ * One JSON-RPC call, asked of each host in `rpc` (one URL or a list) in order until one answers with
+ * a result. A host is skipped on a network error, an HTTP error status (a 429 or a 5xx included), a
+ * body that is not JSON, or a JSON-RPC error (a node may not have the transaction). When every host
+ * fails, the error names each host and what went wrong there.
+ */
+export async function rpcCall(rpc, method, params, fetchImpl = globalThis.fetch) {
+  const hosts = Array.isArray(rpc) ? rpc : [rpc];
+  if (hosts.length === 0) throw new Error("RPC: no host to ask");
+  const failures = [];
+  for (const host of hosts) {
+    let why;
+    try {
+      const res = await fetchImpl(host, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "verify", method, params }),
+      });
+      if (res.ok === false) {
+        why = `HTTP ${res.status}`;
+      } else {
+        let body;
+        try {
+          body = await res.json();
+        } catch {
+          body = undefined;
+        }
+        if (body === undefined || body === null || typeof body !== "object") why = "the answer is not JSON";
+        else if (body.error) why = body.error.cause?.name ?? body.error.message ?? "JSON-RPC error";
+        else if (!("result" in body)) why = "no result in the answer";
+        else return body.result;
+      }
+    } catch (e) {
+      why = e?.message ?? String(e);
+    }
+    failures.push(`${host}: ${why}`);
+  }
+  throw new Error(`RPC: no host answered (${failures.join("; ")})`);
+}
+
+export async function fetchTransaction(txHash, signer, { rpc = TESTNET_ARCHIVAL_RPCS, fetchImpl = globalThis.fetch } = {}) {
+  return rpcCall(rpc, "tx", { tx_hash: txHash, sender_account_id: signer, wait_until: "FINAL" }, fetchImpl);
 }
 
 function events(logs, standard) {
@@ -151,33 +183,28 @@ export function rulingJob(tx, ruling) {
  * the transaction's request_ruling call names the job, and the escrow's get_job view holds the exact
  * strings it sent. A wrong rebuild cannot pass: the re-run's ch and dh would not match the verdict.
  */
-export async function inputFromEscrow(tx, ruling, { rpc = TESTNET_RPC, fetchImpl = globalThis.fetch } = {}) {
+export async function inputFromEscrow(tx, ruling, { rpc = TESTNET_ARCHIVAL_RPCS, fetchImpl = globalThis.fetch } = {}) {
   const where = rulingJob(tx, ruling);
   if (where.error) return where;
   const { jobId } = where;
-  const res = await fetchImpl(rpc, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "verify",
-      method: "query",
-      params: {
-        request_type: "call_function",
-        finality: "final",
-        account_id: ruling.caller,
-        method_name: "get_job",
-        args_base64: btoa(JSON.stringify({ job_id: jobId })),
-      },
-    }),
-  });
-  const body = await res.json();
-  if (body.error || !Array.isArray(body.result?.result)) {
-    return { error: `get_job on ${ruling.caller} failed: ${body.error?.cause?.name ?? body.result?.error ?? "no result"}` };
+  let result;
+  try {
+    result = await rpcCall(rpc, "query", {
+      request_type: "call_function",
+      finality: "final",
+      account_id: ruling.caller,
+      method_name: "get_job",
+      args_base64: btoa(JSON.stringify({ job_id: jobId })),
+    }, fetchImpl);
+  } catch (e) {
+    return { error: `get_job on ${ruling.caller} failed: ${e.message}` };
+  }
+  if (!Array.isArray(result?.result)) {
+    return { error: `get_job on ${ruling.caller} failed: ${result?.error ?? "no result"}` };
   }
   let job;
   try {
-    job = JSON.parse(new TextDecoder().decode(Uint8Array.from(body.result.result)));
+    job = JSON.parse(new TextDecoder().decode(Uint8Array.from(result.result)));
   } catch {
     job = null;
   }
@@ -200,7 +227,7 @@ export async function runJudge(wasmBytes, input, env = {}) {
  * Check one ruling. `wasmBytes` is optional: when absent it is downloaded from the URL OutLayer ran.
  * Returns {ok, steps:[{id, ok, label, detail}], local, onchain}.
  */
-export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner = runJudge, fetchImpl = globalThis.fetch, tx, rpc = TESTNET_RPC } = {}) {
+export async function verifyRuling(ruling, { wasmBytes, env = {}, signer, runner = runJudge, fetchImpl = globalThis.fetch, tx, rpc = TESTNET_ARCHIVAL_RPCS } = {}) {
   const steps = [];
   const step = (id, ok, label, detail = "") => {
     steps.push({ id, ok, label, detail });

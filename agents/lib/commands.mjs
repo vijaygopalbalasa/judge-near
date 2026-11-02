@@ -389,20 +389,22 @@ function showDetail(detail) {
 /** verify --tx HASH --signer ACCOUNT [--as CLIENT_OR_PROVIDER]: the browser verifier's checks
  *  (web/verify.js) from the command line. A sealed ruling is re-run with the deliverable key,
  *  loaded here and kept in memory: --as the job's client (once k is released) or its provider.
- *  The verifier hands the key only to a published judge build whose bytes it has just checked. */
+ *  The verifier hands the key only to a published judge build whose bytes it has just checked.
+ *  The ruling is read from archival nodes (JN_ARCHIVAL_RPC, else ARCHIVAL_RPC_URLS in order),
+ *  never JN_RPC: regular testnet nodes drop transactions after about 30 hours. */
 export async function verify(opts, deps) {
   const txHash = String(opts.tx ?? "");
   if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) throw new Error("--tx needs a transaction hash");
   const signer = accountArg(opts.signer, "--signer");
   const as = opts.as === undefined ? undefined : accountArg(opts.as, "--as");
-  const rpc = deps.env.JN_RPC || cfg.DEFAULT_RPC_URL;
+  const rpc = deps.env.JN_ARCHIVAL_RPC || cfg.ARCHIVAL_RPC_URLS;
   if (opts["dry-run"]) {
     deps.out(JSON.stringify({
       verify: {
         tx: txHash,
         signer,
-        rpc,
-        then: "find the OutLayer run in the transaction, download the wasm it ran, check its SHA-256 against the run and the published judge builds, re-run it here on the same input, compare the verdicts field by field"
+        archival_rpc: Array.isArray(rpc) ? [...rpc] : [rpc],
+        then: "read the transaction from the first archival node above that has it (JN_ARCHIVAL_RPC names another), find the OutLayer run in it, download the wasm it ran, check its SHA-256 against the run and the published judge builds, re-run it here on the same input, compare the verdicts field by field"
           + (as ? `; a sealed ruling is re-run with the deliverable key, loaded as ${as} and kept in memory` : ""),
       },
     }, null, 2));

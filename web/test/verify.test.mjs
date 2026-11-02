@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PUBLISHED_JUDGES, canonicalPrefix, expectedEh, findRuling, rulingJob, runJudge, sha256Hex, verifyRuling } from "../verify.js";
+import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, canonicalPrefix, expectedEh, fetchTransaction, findRuling, inputFromEscrow, rulingJob, runJudge, sha256Hex, verifyRuling, verifyTransaction } from "../verify.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const judge = new Uint8Array(readFileSync(path.join(root, "judge-wasm/release/judge.wasm")));
@@ -273,4 +273,91 @@ test("rulingJob reads the escrow and job from the request_ruling call, and only 
   assert.match(rulingJob(call("escrow.testnet", '{"job_id":-1}'), ruling).error, /could not read the job id/);
   assert.match(rulingJob(call("escrow.testnet", "not json"), ruling).error, /could not read the job id/);
   assert.match(rulingJob({ transaction: { receiver_id: "escrow.testnet", actions: [] } }, ruling).error, /not a request_ruling call/);
+});
+
+// ---- reading the chain: NEAR archival nodes, tried in order ----
+// Regular testnet nodes drop transactions after about 30 hours, so a ruling from last week is only on
+// an archival node. A host that is down, rate limited, or does not have the transaction is skipped.
+
+const ARCHIVAL = ["https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org"];
+const RULING_TX = "4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk";
+const answer = (result) => () => ({ ok: true, status: 200, json: async () => ({ jsonrpc: "2.0", id: "verify", result }) });
+const FAILURES = {
+  "HTTP 429": () => ({ ok: false, status: 429, json: async () => ({}) }),
+  "HTTP 503": () => ({ ok: false, status: 503, json: async () => ({}) }),
+  "a network error": () => {
+    throw new TypeError("fetch failed");
+  },
+  "a body that is not JSON": () => ({ ok: true, status: 200, json: async () => {
+    throw new SyntaxError("Unexpected token '<'");
+  } }),
+  UNKNOWN_TRANSACTION: () => ({ ok: true, status: 200, json: async () => ({ jsonrpc: "2.0", id: "verify", error: { name: "HANDLER_ERROR", cause: { name: "UNKNOWN_TRANSACTION", info: {} }, code: -32000, message: "Server error" } }) }),
+};
+
+/** A fake fetch: `answers` maps each host to a response maker (which may throw); records every host asked. */
+function hostsAnswering(answers) {
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    asked.push({ url, method: JSON.parse(init.body).method });
+    if (!answers[url]) throw new Error(`asked an unexpected host: ${url}`);
+    return answers[url]();
+  };
+  return { fetchImpl, asked };
+}
+
+test("the verifier reads the chain from NEAR archival nodes, FastNEAR's first, then NEAR's own", () => {
+  assert.deepEqual([...TESTNET_ARCHIVAL_RPCS], ARCHIVAL);
+});
+
+test("fetchTransaction asks the first archival host for the transaction and stops when it answers", async () => {
+  const { fetchImpl, asked } = hostsAnswering({ [ARCHIVAL[0]]: answer(tx), [ARCHIVAL[1]]: answer({ wrong: true }) });
+  assert.deepEqual(await fetchTransaction(RULING_TX, "judgeprotocol.testnet", { fetchImpl }), tx);
+  assert.deepEqual(asked, [{ url: ARCHIVAL[0], method: "tx" }]);
+});
+
+test("fetchTransaction moves to the next host on a 429, a 5xx, a network error, a body that is not JSON, or a JSON-RPC error", async () => {
+  for (const [name, fail] of Object.entries(FAILURES)) {
+    const { fetchImpl, asked } = hostsAnswering({ [ARCHIVAL[0]]: fail, [ARCHIVAL[1]]: answer(tx) });
+    assert.deepEqual(await fetchTransaction(RULING_TX, "judgeprotocol.testnet", { fetchImpl }), tx, name);
+    assert.deepEqual(asked.map((a) => a.url), ARCHIVAL, name);
+  }
+});
+
+test("when every host fails, the error names each host and what went wrong there", async () => {
+  const { fetchImpl } = hostsAnswering({ [ARCHIVAL[0]]: FAILURES["HTTP 429"], [ARCHIVAL[1]]: FAILURES.UNKNOWN_TRANSACTION });
+  await assert.rejects(fetchTransaction(RULING_TX, "judgeprotocol.testnet", { fetchImpl }), (e) => {
+    assert.match(e.message, /https:\/\/archival-rpc\.testnet\.fastnear\.com: HTTP 429/);
+    assert.match(e.message, /https:\/\/archival-rpc\.testnet\.near\.org: UNKNOWN_TRANSACTION/);
+    return true;
+  });
+});
+
+test("an explicit rpc, one URL or a list, replaces the archival default", async () => {
+  const one = hostsAnswering({ "https://rpc.example.test": answer(tx) });
+  await fetchTransaction(RULING_TX, "judgeprotocol.testnet", { rpc: "https://rpc.example.test", fetchImpl: one.fetchImpl });
+  assert.deepEqual(one.asked.map((a) => a.url), ["https://rpc.example.test"]);
+  const list = hostsAnswering({ "https://a.example.test": FAILURES["a network error"], "https://b.example.test": answer(tx) });
+  await fetchTransaction(RULING_TX, "judgeprotocol.testnet", { rpc: ["https://a.example.test", "https://b.example.test"], fetchImpl: list.fetchImpl });
+  assert.deepEqual(list.asked.map((a) => a.url), ["https://a.example.test", "https://b.example.test"]);
+});
+
+test("inputFromEscrow reads get_job from the archival hosts too, falls back, and reports a total failure as an error", async () => {
+  const job = { criteria: '{"v":1,"checks":[]}', deliverable: "hello" };
+  const stateTx = { transaction: { receiver_id: "escrow.testnet", actions: [{ FunctionCall: { method_name: "request_ruling", args: btoa('{"job_id":7}') } }] } };
+  const ruling = { caller: "escrow.testnet" };
+  const view = { result: [...new TextEncoder().encode(JSON.stringify(job))] };
+  const { fetchImpl, asked } = hostsAnswering({ [ARCHIVAL[0]]: FAILURES["HTTP 503"], [ARCHIVAL[1]]: answer(view) });
+  const got = await inputFromEscrow(stateTx, ruling, { fetchImpl });
+  assert.equal(got.input, JSON.stringify(job));
+  assert.deepEqual(asked, [{ url: ARCHIVAL[0], method: "query" }, { url: ARCHIVAL[1], method: "query" }]);
+  const down = hostsAnswering({ [ARCHIVAL[0]]: FAILURES["HTTP 429"], [ARCHIVAL[1]]: FAILURES["a network error"] });
+  const failed = await inputFromEscrow(stateTx, ruling, { fetchImpl: down.fetchImpl });
+  assert.match(failed.error, /^get_job on escrow\.testnet failed: .*archival-rpc\.testnet\.fastnear\.com: HTTP 429.*archival-rpc\.testnet\.near\.org: fetch failed/);
+});
+
+test("verifyTransaction, as the page calls it, reads the ruling from the archival hosts", async () => {
+  const { fetchImpl, asked } = hostsAnswering({ [ARCHIVAL[0]]: FAILURES.UNKNOWN_TRANSACTION, [ARCHIVAL[1]]: answer(tx) });
+  const report = await verifyTransaction(RULING_TX, "judgeprotocol.testnet", { fetchImpl, wasmBytes: judgeV1 });
+  assert.equal(report.ok, true, JSON.stringify(report.steps.filter((s) => !s.ok)));
+  assert.deepEqual(asked.map((a) => a.url), ARCHIVAL);
 });

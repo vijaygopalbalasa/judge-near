@@ -17,7 +17,7 @@ export JN_ESCROW=<escrow account id>   # the live testnet escrow is judgenear-es
 
 Each signer needs a NEAR testnet key in `~/.near-credentials/testnet/<account>.json` (the
 file near-cli writes). The tool reads it inside the process to sign, and never prints it.
-Set `JN_RPC` to use another RPC endpoint.
+Set `JN_RPC` to use another RPC endpoint (for every command except `verify`, below).
 
 ## Secrets
 
@@ -78,7 +78,10 @@ nothing touches the network.
 OutLayer run in the ruling transaction, downloads the wasm OutLayer ran, checks its SHA-256
 against the run and against the published judge builds, re-runs it here on the same input and
 compares the verdicts field by field. It needs no `JN_ESCROW` and no NEAR key: the escrow and
-job come from the transaction. It exits with status 1 if anything does not verify.
+job come from the transaction. It exits with status 1 if anything does not verify. It reads the
+ruling from a NEAR archival node (FastNEAR's, then NEAR's own if the first is down, rate limited
+or lacks the transaction), because regular testnet nodes drop transactions after about 30 hours;
+set `JN_ARCHIVAL_RPC` to use another.
 
 ```sh
 node jn.mjs verify --tx G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1 --signer judgenear-worker.testnet

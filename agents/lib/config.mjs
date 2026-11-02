@@ -2,6 +2,12 @@
 
 export const NETWORK = "testnet";
 export const DEFAULT_RPC_URL = "https://rpc.testnet.near.org";
+
+// Where `verify` reads rulings from: NEAR testnet archival nodes, tried in order (FastNEAR's, then
+// NEAR's own). Regular nodes drop transactions after about 30 hours. JN_ARCHIVAL_RPC names another.
+// The same list as TESTNET_ARCHIVAL_RPCS in web/verify.js; a test keeps the two equal.
+export const ARCHIVAL_RPC_URLS = Object.freeze(["https://archival-rpc.testnet.fastnear.com", "https://archival-rpc.testnet.near.org"]);
+
 export const OUTLAYER = "outlayer.testnet";
 export const KEYSTORE_PUBKEY_URL = "https://testnet-api.outlayer.ai/secrets/pubkey";
 export const USER_AGENT = "judge-near-agents/0.1";

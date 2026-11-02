@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // jn: run a Judge on NEAR job end to end on testnet. See README.md.
 // Network: testnet. Escrow: the JN_ESCROW environment variable. Signer: --as <account>.
+// RPC: JN_RPC for live commands; verify reads archival nodes (JN_ARCHIVAL_RPC names another).
 
 import crypto from "node:crypto";
 import os from "node:os";
@@ -27,6 +28,10 @@ const USAGE = `usage: node jn.mjs <command> [options]   (escrow from JN_ESCROW; 
   ruling needs the deliverable key: --as the job's client (after the key is released) or its
   provider loads it from ~/.judge-near, in memory only. submit-sealed on a job that key_missing
   sent back to Submitted stores the saved key again; then ask for a ruling again.
+
+  verify reads the ruling from NEAR archival nodes (FastNEAR's, then NEAR's own), because regular
+  testnet nodes drop transactions after about 30 hours; JN_ARCHIVAL_RPC names another node. Every
+  other command uses JN_RPC (default https://rpc.testnet.near.org).
 
   Live, every command except open, status and verify first checks that the escrow runs the
   published escrow build and the published judge, and ruling refuses a deposit above
