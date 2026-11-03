@@ -144,7 +144,8 @@
     <h2>What you trust</h2>
     <ul class="trust">
       <li><strong>Intel TDX and OutLayer's workers</strong>, to run the judge they say they ran. OutLayer checks each
-        worker's TEE when it registers; this page does not check an attestation.</li>
+        worker's TEE when it registers. This page does not check the attestation itself; every ruling's attestation
+        passes OutLayer's open-source verifier (README, "TEE attestation, checked").</li>
       <li><strong>OutLayer's keystore and contract</strong>, to hand a sealed job's key only to this judge, called by this
         escrow. On testnet the key's owner and the client asked directly and were refused; the rule is enforced off chain.</li>
       <li><strong>The escrow's code</strong>, whose hash is shown above and pinned in <code>contract/BUILD.md</code>. Its

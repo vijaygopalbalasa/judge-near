@@ -11,7 +11,7 @@ refunds the buyer and releases nothing.
 
 - The live page, which reads the escrow from NEAR testnet and re-runs its rulings in your browser:
   https://vijaygopalbalasa.github.io/judge-near/web/
-- Job 9 on testnet: the worker's whole delivery was an instruction to the grader to ignore the checks and pass it.
+- Job 9 on testnet, the attack demo: the worker's whole delivery was an instruction to the grader to ignore the checks and pass it.
   The judge ran the checks anyway (score 50), and the client was refunded. Re-run that ruling yourself (Node 22):
 
   ```sh
@@ -23,6 +23,15 @@ refunds the buyer and releases nothing.
   disclosed delivery (pass: false, score: 50)."
 - Rebuild the judge and the escrow byte for byte: `bash scripts/reproduce.sh` prints MATCH for each (macOS on Apple
   silicon; CI runs it on every push).
+- Check that each ruling really ran in Intel TDX, with OutLayer's own open-source verifier. Every ruling's attestation
+  is saved in `evidence/attestation/`; this re-checks one with no network (needs Rust):
+
+  ```sh
+  cargo install --locked --git https://github.com/out-layer/outlayer-verify --rev 90c27d9d4fc843194ddc6f8ebaafa4eb320c3bb6 outlayer-verify
+  outlayer-verify bundle evidence/attestation/job-9-7NfdY4.json --offline --short
+  ```
+
+  Expected: "PROVEN task 16426 (execute) ...". All 12 rulings pass ([details](#tee-attestation-checked)).
 - Watch a pass and a fail end to end, offline: `cd agents && npm run demo`.
 
 <p align="center"><img src="docs/flow.svg" width="860" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></p>
@@ -285,6 +294,47 @@ Jobs 5 and 6 came from the first version of the worker, which had no nonce and d
 it first. Jobs 7 and 8 come from the current worker; job 8 was sent with `--deliver-anyway`, the way to show a failing
 delivery, after the worker's own check said it would fail.
 
+## TEE attestation, checked
+
+OutLayer records an Intel TDX attestation for every run: a quote signed through Intel's certificate chain, whose
+report data commits to the run's fields, among them the wasm's SHA-256, the input and output hashes, the caller and
+the block. OutLayer's open-source verifier, [outlayer-verify](https://github.com/out-layer/outlayer-verify) (MIT or
+Apache-2.0, used at commit 90c27d9), checks five things for a transaction:
+
+1. Authenticity: the quote's signature chain ends at Intel's root certificate, checked against Intel collateral that
+   the verifier reads from `worker.outlayer.testnet` on chain.
+2. Identity: the quote's five TDX measurements are an approved worker build on `worker.outlayer.testnet`.
+3. Binding: the quote's report data equals the hash of the record's fields.
+4. Input and 5. Output: the bytes in the NEAR transaction hash to the attested values.
+
+All 12 rulings pass all five, and every record names the judge build the escrow pins (`911b8a35...`). Each bundle
+holds the record, the Intel collateral and the transaction's bytes, so `outlayer-verify bundle <file> --offline`
+re-checks it with no network:
+
+| Job | Ruling | OutLayer task | Verdict | Bundle |
+|---|---|---|---|---|
+| 0 | `G5zVDo...` | 16160 | PROVEN | [`job-0-G5zVDo.json`](evidence/attestation/job-0-G5zVDo.json) |
+| 1 | `GgZvjQ...` | 16161 | PROVEN | [`job-1-GgZvjQ.json`](evidence/attestation/job-1-GgZvjQ.json) |
+| 2 | `5nC2AB...` | 16162 | PROVEN | [`job-2-5nC2AB.json`](evidence/attestation/job-2-5nC2AB.json) |
+| 3 | `3sCPet...` | 16164 | PROVEN | [`job-3-3sCPet.json`](evidence/attestation/job-3-3sCPet.json) |
+| 4 | `J5hX6n...` | 16165 | PROVEN | [`job-4-J5hX6n.json`](evidence/attestation/job-4-J5hX6n.json) |
+| 4 | `5G6jQj...` | 16173 | PROVEN | [`job-4-5G6jQj.json`](evidence/attestation/job-4-5G6jQj.json) |
+| 5 | `5E4FiC...` | 16268 | PROVEN | [`job-5-5E4FiC.json`](evidence/attestation/job-5-5E4FiC.json) |
+| 6 | `7rjHmF...` | 16269 | PROVEN | [`job-6-7rjHmF.json`](evidence/attestation/job-6-7rjHmF.json) |
+| 7 | `HbByxt...` | 16307 | PROVEN | [`job-7-HbByxt.json`](evidence/attestation/job-7-HbByxt.json) |
+| 8 | `42xXF6...` | 16309 | PROVEN | [`job-8-42xXF6.json`](evidence/attestation/job-8-42xXF6.json) |
+| 9 | `7NfdY4...` | 16426 | PROVEN | [`job-9-7NfdY4.json`](evidence/attestation/job-9-7NfdY4.json) |
+| 10 | `Cs7MsJ...` | 16467 | PROVEN | [`job-10-Cs7MsJ.json`](evidence/attestation/job-10-Cs7MsJ.json) |
+
+To check from the chain instead of a file: `outlayer-verify tx 7NfdY4rqEBpPHuri44XaVgJevxQtTFWv1UhUfsuKUQub --network
+testnet --api https://testnet-api.outlayer.ai` (the tool's built-in testnet address has moved, so `--api` names the
+current one). With `--offline`, the approval of the worker build is read from the bundle; the `tx` form asks the chain
+again.
+
+What this does not show: that the approved worker build was compiled from the source OutLayer publishes, who may change
+the approved list (whoever controls `worker.outlayer.testnet`), or that the judge's rules are right, which its tests
+and the browser re-run cover.
+
 ## Status and tests
 
 | Part | State |
@@ -292,6 +342,7 @@ delivery, after the worker's own check said it would fail.
 | Judge (Rust, `wasm32-wasip1`) | Works, v2 (public and sealed jobs): 305 parity vectors against the original engine and 42 sealed vectors, fuel-bounded; the build reproduces byte for byte on macOS on Apple silicon |
 | Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for twelve rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4, 9 and 10 re-run in full on their disclosed text |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused |
+| TEE attestation of each ruling | All 12 rulings pass outlayer-verify: Intel signature chain, approved worker build, binding, input and output; bundles in `evidence/attestation/` |
 | Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
 | Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 2, 21:55 UTC), code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/jn.mjs`) | Works: create, fund, submit, sealed submit, ruling, open, verify, forget; checks criteria and deliveries with the judge before sending; checks the escrow's code and judge before any live step; every path run live on testnet |
@@ -348,8 +399,9 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 
 ## Security model and limits
 
-- **What you trust:** Intel TDX and OutLayer's worker registration (each worker's TEE is checked once when it
-  registers, and results arrive from registered worker keys), plus the published judge build. The attestation shows
+- **What you trust:** Intel TDX and OutLayer's worker registration (each worker's TEE is checked when it registers,
+  results arrive from registered worker keys, and every ruling's own attestation passes OutLayer's verifier, see
+  [TEE attestation, checked](#tee-attestation-checked)), plus the published judge build. The attestation shows
   which code ran, not that the code is right; the judge's tests, parity vectors and mutation logs are how you check
   that. Also trusted: OutLayer's keystore coordinator (the worker encrypts its key to the public key it serves over
   HTTPS; this tool does not check an attestation for it), OutLayer's contract (its owner can upgrade it), and the vault
@@ -381,6 +433,14 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
   can have its code replaced by its owner. `judgenear-escrow.testnet` had one deploy key: it was used once, on Nov 2
   2026 at 21:55 UTC, to deploy v3, and deleted on Nov 3 at 08:50 UTC ([2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet)). The account has no keys
   now, so nobody can replace its code; the page checks this live.
+- **Agent keys:** the two agents sign with full-access keys. Every money step attaches a deposit, and NEAR refuses a
+  deposit sent with a function-call key (nearcore's `DepositWithFunctionCall` error): `create_job` and `submit` pay for
+  their storage (0.1 and 0.2 NEAR; the escrow refunds anything above actual cost), `fund` carries the payment,
+  `store_secrets` pays OutLayer 0.1 NEAR and `request_ruling` carries the ruling fee. A key scoped to one contract
+  could cover only calls with no deposit, such as `delete_secrets` on OutLayer. What limits an agent instead: its
+  account holds only what its jobs need, and before any live step `agents/` checks the escrow's code hash and judge,
+  refuses a ruling fee above 0.1 NEAR, and runs the judge on the delivery, refusing to send work that would fail
+  unless told to (`--deliver-anyway`). The escrow account holds no keys at all.
 - **Testnet only** so far. No third-party users yet.
 
 ## Repository map
@@ -396,6 +456,7 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 | `tools/deploy-escrow.mjs` | Deploys the published escrow build to a testnet account and initialises it, in one transaction |
 | `tools/vault-probe.mjs` | Asks OutLayer directly, not through the escrow, to run the judge on a sealed job's key; OutLayer must refuse |
 | `docs/interface.md` | Input, criteria, verdict, hashes, contract rules and sealed mode, in one place |
+| `evidence/` | The disclosed deliveries of jobs 9 and 10, and each ruling's TEE attestation bundle (`evidence/attestation/`) |
 
 ## Built with
 
@@ -406,6 +467,7 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 - Page: plain HTML and JavaScript with no dependencies; it runs the judge through its own small WASI shim
   (`web/wasi.js`).
 - Services: OutLayer (TEE runs and the vault), NEAR and FastNEAR RPC nodes, and FastNEAR's transaction index.
+- Checking attestations: OutLayer's outlayer-verify (MIT or Apache-2.0), commit 90c27d9.
 - Baseline: the check kinds of the Judge Protocol engine (MIT), described under [Prior work](#prior-work).
 
 ## Prior work
