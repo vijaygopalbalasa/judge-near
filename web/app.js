@@ -3,6 +3,7 @@ import { ESCROW, JOB_NOTES, RULINGS, discoverRulings, disclosedDelivery, formatN
 import { describeCheck, explainCriteria } from "./criteria.js";
 import { EXAMPLES } from "./examples.js";
 import { PUBLISHED_JUDGES, publishedJudgeName, reportOutcome, sha256Hex, verifyTransaction } from "./verify.js";
+import { REGISTER_CONTRACT, checkTransactionAttestation, loadDcap } from "./attest.js";
 
 const $ = (id) => document.getElementById(id);
 const RUN_LIMIT_MS = 10_000;
@@ -120,6 +121,42 @@ function prettyCriteria(text) {
   }
 }
 
+// The DCAP verifier (about 1 MB of wasm) loads once, on the first attestation check, after its SHA-256 is checked.
+let dcapLoading = null;
+const getDcap = () => (dcapLoading ??= loadDcap().catch((err) => {
+  dcapLoading = null;
+  throw err;
+}));
+
+function showAttestation(summary, report) {
+  if (report.ok) {
+    summary.className = "summary ok";
+    summary.replaceChildren(document.createTextNode("Proven: this ruling ran on genuine Intel TDX hardware, in an approved OutLayer worker build, and the quote covers exactly this run, this input and this output."),
+      el("span", "explain", `Checked here in your browser: Intel's signature chain with dcap-qvl (compiled to wasm), against Intel's TCB data valid when the run happened (${report.executedAt}); the approved builds on ${REGISTER_CONTRACT}; and the record's fields against the hash the quote signed.`));
+    return;
+  }
+  const first = report.steps.find((step) => step.ok !== true);
+  summary.className = first?.ok === false ? "summary bad" : "summary note";
+  summary.textContent = first?.ok === false ? "Not proven: a check below fails." : "Not proven: a check below could not be answered, which is not a pass.";
+}
+
+async function runAttestation(button, summary, list, tx, signer) {
+  button.disabled = true;
+  summary.className = "summary";
+  summary.textContent = "Checking the TEE attestation...";
+  list.replaceChildren();
+  try {
+    const report = await checkTransactionAttestation(tx, signer, { dcap: await getDcap() });
+    renderSteps(list, report.steps);
+    showAttestation(summary, report);
+  } catch (err) {
+    summary.className = "summary bad";
+    summary.textContent = `Could not check it: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /** One listed ruling: a Verify button and, when the job's delivery is disclosed, a check on that text. */
 function rulingRow(r, disclosed) {
   const box = el("div", "ruling");
@@ -135,7 +172,22 @@ function rulingRow(r, disclosed) {
   summary.setAttribute("role", "status");
   summary.setAttribute("aria-live", "polite");
   const list = el("ol", "steps");
-  box.append(head, summary, list);
+  const attestButton = el("button", "secondary", "TEE attestation");
+  attestButton.type = "button";
+  attestButton.title = "Check the Intel TDX attestation OutLayer recorded for this run";
+  const attestSummary = el("div", "summary");
+  attestSummary.setAttribute("role", "status");
+  attestSummary.setAttribute("aria-live", "polite");
+  const attestList = el("ol", "steps");
+  // Hidden until asked for, so the card keeps its height.
+  attestSummary.hidden = true;
+  attestList.hidden = true;
+  box.append(head, summary, list, attestSummary, attestList);
+  attestButton.addEventListener("click", () => {
+    attestSummary.hidden = false;
+    attestList.hidden = false;
+    runAttestation(attestButton, attestSummary, attestList, r.tx, r.signer);
+  });
   const job = { escrow: ESCROW, jobId: r.job };
   button.addEventListener("click", () => runCheck(button, summary, list, () => verifyTransaction(r.tx, r.signer, { job, runner: runInWorker })));
   // A key_missing ruling never opened the delivery, so the text cannot re-check it; Verify re-runs it in full.
@@ -145,6 +197,7 @@ function rulingRow(r, disclosed) {
     actions.append(onText);
     onText.addEventListener("click", () => runCheck(onText, summary, list, () => verifyTransaction(r.tx, r.signer, { job, runner: runInWorker, delivery: disclosed.text })));
   }
+  actions.append(attestButton);
   return box;
 }
 

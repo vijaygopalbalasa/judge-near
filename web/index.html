@@ -82,8 +82,9 @@
   <p class="lead">Escrow for agent work. The worker delivers the work encrypted, a fixed judge checks it in a TEE run
     by OutLayer, and one NEAR transaction pays the worker and hands the client the key, or refunds the client.</p>
   <p class="lead">Try the judge below, then re-run any of the escrow's live rulings: Verify downloads the exact wasm
-    OutLayer ran, checks its SHA-256 and runs it here. The page signs nothing: it only reads from NEAR nodes, FastNEAR's
-    transaction index and the wasm's URL.</p>
+    OutLayer ran, checks its SHA-256 and runs it here, and TEE attestation checks the Intel TDX quote OutLayer recorded
+    for that run. The page signs nothing: it only reads from NEAR nodes, FastNEAR's transaction index, OutLayer's
+    attestation records and the wasm's URL.</p>
   <p class="lead">On testnet, job 9's whole delivery told the grader to ignore the checks and pass it. The judge ran the
     checks anyway (score 50), and the client was refunded: <a href="#job-9">see job 9</a> and press
     <strong>Verify on the disclosed text</strong>.</p>
@@ -143,9 +144,11 @@
   <section>
     <h2>What you trust</h2>
     <ul class="trust">
-      <li><strong>Intel TDX and OutLayer's workers</strong>, to run the judge they say they ran. OutLayer checks each
-        worker's TEE when it registers. This page does not check the attestation itself; every ruling's attestation
-        passes OutLayer's open-source verifier (README, "TEE attestation, checked").</li>
+      <li><strong>Intel TDX and OutLayer's workers</strong>, to run the judge they say they ran. Each ruling's TEE
+        attestation button checks that run's quote here: Intel's signature chain, an approved worker build on
+        worker.outlayer.testnet, and the quote's commitment to this exact run. You still trust Intel's hardware and whoever
+        controls that approved list. OutLayer's attestation server is not trusted: a record that differs from what the TEE
+        signed fails Binding.</li>
       <li><strong>OutLayer's keystore and contract</strong>, to hand a sealed job's key only to this judge, called by this
         escrow. On testnet the key's owner and the client asked directly and were refused; the rule is enforced off chain.</li>
       <li><strong>The escrow's code</strong>, whose hash is shown above and pinned in <code>contract/BUILD.md</code>. Its

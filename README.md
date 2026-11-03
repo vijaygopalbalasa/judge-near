@@ -23,8 +23,9 @@ refunds the buyer and releases nothing.
   disclosed delivery (pass: false, score: 50)."
 - Rebuild the judge and the escrow byte for byte: `bash scripts/reproduce.sh` prints MATCH for each (macOS on Apple
   silicon; CI runs it on every push).
-- Check that each ruling really ran in Intel TDX, with OutLayer's own open-source verifier. Every ruling's attestation
-  is saved in `evidence/attestation/`; this re-checks one with no network (needs Rust):
+- Check that each ruling really ran in Intel TDX: press **TEE attestation** on any ruling on the live page (expected:
+  seven green checks and "Proven"), or re-check a saved record with OutLayer's own open-source verifier. Every ruling's
+  attestation is saved in `evidence/attestation/`; this re-checks one with no network (needs Rust):
 
   ```sh
   cargo install --locked --git https://github.com/out-layer/outlayer-verify --rev 90c27d9d4fc843194ddc6f8ebaafa4eb320c3bb6 outlayer-verify
@@ -138,6 +139,10 @@ http://localhost:8080/web/.
 - **Verify** on job 0's ruling gives eleven green checks and "Verified". A sealed ruling without its key gives nine
   green checks, a circle on the re-run, and "Consistent, not re-run". Jobs 2 to 4 sealed texts that jobs 0 and 1
   delivered in public, so their cards also offer **Verify on the disclosed text**, which re-runs them in full.
+- **TEE attestation** on any ruling checks the Intel TDX quote OutLayer recorded for that run, in your browser: Intel's
+  signature chain (dcap-qvl compiled to wasm), an approved worker build on `worker.outlayer.testnet`, the quote's
+  commitment to the record's fields, and the input and output in the transaction. Expected: seven green checks and
+  "Proven: this ruling ran on genuine Intel TDX hardware...". The first check loads about 1 MB of wasm.
 - **Re-run any ruling** takes any ruling transaction, with the delivery key or a disclosed delivery if you have one,
   pasted or loaded from a file. A link of the form `web/?tx=<hash>&signer=<account>` opens a ruling there; every
   ruling link in this README is one.
@@ -307,6 +312,10 @@ Apache-2.0, used at commit 90c27d9), checks five things for a transaction:
 3. Binding: the quote's report data equals the hash of the record's fields.
 4. Input and 5. Output: the bytes in the NEAR transaction hash to the attested values.
 
+The page runs the same checks live (the **TEE attestation** button on each ruling, code in `web/attest.js`): the record
+and the Intel collateral come from OutLayer's API, the approved list from NEAR, and the quote's signature chain is
+checked by Phala's dcap-qvl compiled to wasm. outlayer-verify is a second, independent implementation, and the two agree.
+
 All 12 rulings pass all five, and every record names the judge build the escrow pins (`911b8a35...`). Each bundle
 holds the record, the Intel collateral and the transaction's bytes, so `outlayer-verify bundle <file> --offline`
 re-checks it with no network:
@@ -342,7 +351,7 @@ and the browser re-run cover.
 | Judge (Rust, `wasm32-wasip1`) | Works, v2 (public and sealed jobs): 305 parity vectors against the original engine and 42 sealed vectors, fuel-bounded; the build reproduces byte for byte on macOS on Apple silicon |
 | Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for twelve rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4, 9 and 10 re-run in full on their disclosed text |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused |
-| TEE attestation of each ruling | All 12 rulings pass outlayer-verify: Intel signature chain, approved worker build, binding, input and output; bundles in `evidence/attestation/` |
+| TEE attestation of each ruling | All 12 pass the page's live check and outlayer-verify: Intel signature chain, approved worker build, binding, input and output; bundles in `evidence/attestation/` |
 | Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
 | Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 2, 21:55 UTC), code hash matching `contract/BUILD.md` |
 | Agent command line tool (`agents/jn.mjs`) | Works: create, fund, submit, sealed submit, ruling, open, verify, forget; checks criteria and deliveries with the judge before sending; checks the escrow's code and judge before any live step; every path run live on testnet |
@@ -354,7 +363,7 @@ mutation runs.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
-| `node --test web/test/*.test.mjs` | 68 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 84 passed (Node 22 or newer, nothing to install) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib --locked` | 116 passed; building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 14 passed, 3 to 8 minutes; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow |
@@ -400,8 +409,8 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 ## Security model and limits
 
 - **What you trust:** Intel TDX and OutLayer's worker registration (each worker's TEE is checked when it registers,
-  results arrive from registered worker keys, and every ruling's own attestation passes OutLayer's verifier, see
-  [TEE attestation, checked](#tee-attestation-checked)), plus the published judge build. The attestation shows
+  results arrive from registered worker keys, and every ruling's own attestation passes the page's check and OutLayer's
+  verifier, see [TEE attestation, checked](#tee-attestation-checked)), plus the published judge build. The attestation shows
   which code ran, not that the code is right; the judge's tests, parity vectors and mutation logs are how you check
   that. Also trusted: OutLayer's keystore coordinator (the worker encrypts its key to the public key it serves over
   HTTPS; this tool does not check an attestation for it), OutLayer's contract (its owner can upgrade it), and the vault
@@ -451,7 +460,7 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 | `judge-wasm/release/judge.wasm` | The exact file OutLayer downloads, with its SHA-256 |
 | `contract/` | The escrow contract and a mock OutLayer for sandbox tests |
 | `agents/` | The command line tool a client and a worker use to run a job on testnet (`jn.mjs`), and the two agents (`agent.mjs`) |
-| `web/` | The page: the escrow's jobs, read live, the browser verifier, a transaction viewer (`tx.html`), and their tests |
+| `web/` | The page: the escrow's jobs, read live, the browser verifier, the attestation check (`attest.js`), a transaction viewer (`tx.html`), and their tests |
 | `tools/keystore-probe/` | The probe used to check OutLayer's vault rules on testnet |
 | `tools/deploy-escrow.mjs` | Deploys the published escrow build to a testnet account and initialises it, in one transaction |
 | `tools/vault-probe.mjs` | Asks OutLayer directly, not through the escrow, to run the judge on a sealed job's key; OutLayer must refuse |
@@ -464,8 +473,9 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 - Escrow: near-sdk 5.30 and hex, built with cargo-near 0.22.0; its tests use near-workspaces 0.24, tokio, serde_json,
   anyhow and x25519-dalek.
 - Agents: near-api-js 7.3.1. The fuel check and one agent test run the judge under wasmtime.
-- Page: plain HTML and JavaScript with no dependencies; it runs the judge through its own small WASI shim
-  (`web/wasi.js`).
+- Page: plain HTML and JavaScript, no build step. It runs the judge through its own small WASI shim (`web/wasi.js`)
+  and checks attestations with Phala's dcap-qvl compiled to wasm (`web/vendor/dcap-qvl-web/`, @phala/dcap-qvl-web
+  0.3.3, MIT, pinned by SHA-256).
 - Services: OutLayer (TEE runs and the vault), NEAR and FastNEAR RPC nodes, and FastNEAR's transaction index.
 - Checking attestations: OutLayer's outlayer-verify (MIT or Apache-2.0), commit 90c27d9.
 - Baseline: the check kinds of the Judge Protocol engine (MIT), described under [Prior work](#prior-work).
