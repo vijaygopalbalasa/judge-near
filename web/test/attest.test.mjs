@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ATTESTATION_API, DCAP_WASM_SHA256, REGISTER_CONTRACT, checkAttestation, decodeQuote, fmspcOf, loadDcap, taskHash } from "../attest.js";
+import { ATTESTATION_API, DCAP_WASM_SHA256, REGISTER_CONTRACT, V1_CUTOFF, checkAttestation, decodeQuote, fmspcOf, loadDcap, taskHash } from "../attest.js";
 import { RULINGS } from "../escrow.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -42,8 +42,11 @@ function fakeNet(b, { record = b.attestation, collateral = {}, approved = true, 
 }
 
 const dcap = await loadDcap(wasmBytes);
+/** What the ruling transaction itself says about the run (its execution_requested event and that receipt's block). */
+const onChainOf = (a) => ({ signer: a.caller_account_id, requestId: a.request_id, wasmHash: a.wasm_hash, buildTarget: a.build_target,
+  secretsRef: a.secrets_ref, projectId: null, attachedUsd: a.attached_usd, blockHeight: a.block_height, requestedAt: a.timestamp - 3 });
 const run = (b, net, extra = {}) => checkAttestation(
-  { tx: b.attestation.transaction_hash, input: b.input_raw, output: b.output_raw, ...extra },
+  { tx: b.attestation.transaction_hash, input: b.input_raw, output: b.output_raw, onChain: onChainOf(b.attestation), ...extra },
   { dcap, fetchImpl: net.fetchImpl, rpc: ["https://rpc.example"] },
 );
 const verdicts = (report) => Object.fromEntries(report.steps.map((s) => [s.id, s.ok]));
@@ -105,10 +108,13 @@ test("one flipped byte in the quote fails Authenticity, and Identity and Binding
   assert.equal(v.binding, null);
 });
 
-test("a changed field in the record fails Binding: the quote signed different values", async () => {
-  const { b } = bundles[0];
-  const record = { ...b.attestation, secrets_ref: "someone-else.testnet/profile" };
-  const report = await run(b, fakeNet(b, { record }));
+test("a changed field in the record fails: the record check catches what the chain names, Binding the rest", async () => {
+  const { b } = bundles.find(({ b }) => b.attestation.secrets_ref);
+  // A field the transaction names (here the secrets reference) is caught before the quote is read.
+  assert.equal(verdicts(await run(b, fakeNet(b, { record: { ...b.attestation, secrets_ref: "someone-else.testnet/profile" } }))).record, false);
+  // The time moved by one second still sits inside the run's window, so only the signed hash can catch it.
+  const report = await run(b, fakeNet(b, { record: { ...b.attestation, timestamp: b.attestation.timestamp + 1 } }));
+  assert.equal(verdicts(report).record, true);
   assert.equal(verdicts(report).binding, false);
   assert.equal(report.ok, false);
 });
@@ -118,8 +124,12 @@ test("an output that is not the transaction's fails Output, and a record for ano
   assert.equal(verdicts(await run(b, fakeNet(b), { output: `${b.output_raw} ` })).output, false);
   const other = { ...b.attestation, wasm_hash: "00".repeat(32) };
   const v = verdicts(await run(b, fakeNet(b, { record: other })));
-  assert.equal(v.judge, false);
-  assert.equal(v.binding, false, "the wasm hash is one of the signed fields");
+  assert.equal(v.record, false, "the transaction names the wasm it asked for");
+  // A ruling whose own request named an unpublished wasm passes the record check and fails the judge check.
+  const unpublished = { ...onChainOf(b.attestation), wasmHash: "00".repeat(32) };
+  const w = verdicts(await run(b, fakeNet(b, { record: other }), { onChain: unpublished }));
+  assert.equal(w.record, true);
+  assert.equal(w.judge, false);
 });
 
 test("measurements that are not approved fail Identity", async () => {
@@ -136,12 +146,64 @@ test("a genuine quote whose platform Intel flags (TCB not UpToDate) leaves Authe
   const { b } = bundles[0];
   const flagged = { verify: (q, c, n) => ({ ...dcap.verify(q, c, n), status: "OutOfDate", advisory_ids: ["INTEL-SA-00837"] }) };
   const report = await checkAttestation(
-    { tx: b.attestation.transaction_hash, input: b.input_raw, output: b.output_raw },
+    { tx: b.attestation.transaction_hash, input: b.input_raw, output: b.output_raw, onChain: onChainOf(b.attestation) },
     { dcap: flagged, fetchImpl: fakeNet(b).fetchImpl, rpc: ["https://rpc.example"] },
   );
   const step = report.steps.find((s) => s.id === "authenticity");
   assert.equal(step.ok, null);
   assert.match(step.detail, /OutOfDate.*INTEL-SA-00837/);
+  assert.equal(report.ok, false);
+});
+
+// The signed hash has no length prefixes (outlayer-verify documents this), so a server could move bytes between
+// neighbouring fields and still match it. Every field is therefore tied to the transaction's own request.
+test("a record that re-splits its caller and secrets fields fails, although the signed hash would still match", async () => {
+  const { b } = bundles.find(({ b }) => b.attestation.secrets_ref);
+  const a = b.attestation;
+  const [account, profile] = a.secrets_ref.split("/");
+  const record = { ...a, caller_account_id: `${a.caller_account_id}${account}/`, secrets_ref: profile };
+  assert.equal(await taskHash(record), await taskHash(a), "the re-split hashes the same");
+  const report = await run(b, fakeNet(b, { record }));
+  assert.equal(verdicts(report).record, false);
+  assert.equal(report.ok, false);
+});
+
+test("a record that moves bytes between build_target and wasm_hash fails", async () => {
+  const { b } = bundles[0];
+  const a = b.attestation;
+  const record = { ...a, build_target: a.build_target.slice(0, -1), wasm_hash: a.build_target.slice(-1) + a.wasm_hash };
+  assert.equal(await taskHash(record), await taskHash(a));
+  assert.equal(verdicts(await run(b, fakeNet(b, { record }))).record, false);
+});
+
+test("a record in the older format, which binds fewer fields, is refused", async () => {
+  const { b } = bundles[0];
+  const record = { ...b.attestation, timestamp: V1_CUTOFF - 1 };
+  assert.equal(verdicts(await run(b, fakeNet(b, { record }), { onChain: { ...onChainOf(b.attestation), requestedAt: V1_CUTOFF - 4 } })).record, false);
+});
+
+test("a record whose time or block is not the on-chain request's is refused", async () => {
+  const { b } = bundles[0];
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...onChainOf(b.attestation), requestedAt: b.attestation.timestamp - 7200 } })).record, false);
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...onChainOf(b.attestation), blockHeight: b.attestation.block_height + 1 } })).record, false);
+});
+
+test("each field the transaction names is checked on its own: caller, build target, hash format", async () => {
+  const { b } = bundles[0];
+  const chain = onChainOf(b.attestation);
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...chain, signer: "someone-else.testnet" } })).record, false, "caller");
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...chain, buildTarget: "wasm32-wasip2" } })).record, false, "build target");
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...chain, requestId: chain.requestId + 1 } })).record, false, "request id");
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...chain, attachedUsd: "5" } })).record, false, "attached payment");
+  assert.equal(verdicts(await run(b, fakeNet(b), { onChain: { ...chain, projectId: "someone.testnet/project" } })).record, false, "project");
+  const upper = { ...b.attestation, input_hash: b.attestation.input_hash.toUpperCase() };
+  assert.equal(verdicts(await run(b, fakeNet(b, { record: upper }))).record, false, "hash format");
+});
+
+test("without the transaction's own request the record cannot be tied to it: unproven, not passed", async () => {
+  const { b } = bundles[0];
+  const report = await run(b, fakeNet(b), { onChain: undefined });
+  assert.equal(verdicts(report).record, null);
   assert.equal(report.ok, false);
 });
 

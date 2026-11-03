@@ -314,7 +314,10 @@ Apache-2.0, used at commit 90c27d9), checks five things for a transaction:
 
 The page runs the same checks live (the **TEE attestation** button on each ruling, code in `web/attest.js`): the record
 and the Intel collateral come from OutLayer's API, the approved list from NEAR, and the quote's signature chain is
-checked by Phala's dcap-qvl compiled to wasm. outlayer-verify is a second, independent implementation, and the two agree.
+checked by Phala's dcap-qvl compiled to wasm. Because the signed hash has no length prefixes, the page also ties every
+field of OutLayer's record to the transaction's own request (caller, request id, wasm, secrets, payment, block and
+time) and refuses the older record format, which signs fewer fields. outlayer-verify is a second, independent
+implementation, and the two agree.
 
 All 12 rulings pass all five, and every record names the judge build the escrow pins (`911b8a35...`). Each bundle
 holds the record, the Intel collateral and the transaction's bytes, so `outlayer-verify bundle <file> --offline`
@@ -363,7 +366,7 @@ mutation runs.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
-| `node --test web/test/*.test.mjs` | 84 passed (Node 22 or newer, nothing to install) |
+| `node --test web/test/*.test.mjs` | 90 passed (Node 22 or newer, nothing to install) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib --locked` | 116 passed; building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 14 passed, 3 to 8 minutes; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow |

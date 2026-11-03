@@ -9,7 +9,7 @@
 // valid when the run happened, which OutLayer archives and serves. Measurements and report_data are read only from
 // the quote that verification returns, never from the record.
 
-import { PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, fetchTransaction, findRuling, inputFromEscrow, rpcCall, sha256Hex } from "./verify.js";
+import { OUTLAYER_ACCOUNTS, PUBLISHED_JUDGES, TESTNET_ARCHIVAL_RPCS, fetchTransaction, findRuling, inputFromEscrow, rpcCall, sha256Hex } from "./verify.js";
 import { TESTNET_STATE_RPCS } from "./escrow.js";
 
 export const ATTESTATION_API = "https://testnet-api.outlayer.ai";
@@ -20,6 +20,9 @@ export const V1_CUTOFF = 1_769_784_939;
 export const DCAP_WASM_SHA256 = "0583364c30741259992dd12055e2439e006ca234f7d13be4c77b436f242a9dc1";
 const DCAP_DIR = new URL("./vendor/dcap-qvl-web/", import.meta.url);
 const API_TIMEOUT_MS = 15_000;
+/** A run settles within OutLayer's yield window (about 200 blocks); the record's time must fall soon after the request. */
+const MAX_RUN_SECONDS = 1800;
+const HEX64 = /^[0-9a-f]{64}$/;
 
 const utf8 = new TextEncoder();
 const toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -135,6 +138,39 @@ async function getJson(fetchImpl, url) {
   return res.json();
 }
 
+/**
+ * Why a record cannot be tied to its transaction, if it cannot. The signed hash has no length prefixes (outlayer-verify
+ * documents this), so a server could move bytes between neighbouring fields and still match it; each field is therefore
+ * checked against the transaction's own request (its execution_requested event and that receipt's block), the hashes
+ * must be exactly 64 lowercase hex characters, and only the newer format, which signs the caller, secrets and time, is
+ * accepted.
+ */
+export function recordProblems(record, onChain) {
+  const problems = [];
+  for (const key of ["wasm_hash", "input_hash", "output_hash"]) {
+    if (!HEX64.test(String(record[key] ?? ""))) problems.push(`its ${key} is not 64 lowercase hex characters`);
+  }
+  if (!Number.isSafeInteger(record.timestamp) || record.timestamp < V1_CUTOFF) {
+    problems.push("it uses the older format, which does not sign the caller, the secrets or the time");
+  }
+  if (record.repo_url != null || record.commit_hash != null) problems.push("it names a repository, but this run downloaded a wasm by URL");
+  const same = (key, label, chainValue) => {
+    if ((record[key] ?? null) !== (chainValue ?? null)) problems.push(`its ${label} is ${record[key] ?? "empty"}, the transaction's is ${chainValue ?? "empty"}`);
+  };
+  same("caller_account_id", "caller", onChain.signer);
+  same("request_id", "request id", onChain.requestId);
+  same("wasm_hash", "wasm hash", onChain.wasmHash);
+  same("build_target", "build target", onChain.buildTarget);
+  same("secrets_ref", "secrets reference", onChain.secretsRef);
+  same("project_id", "project", onChain.projectId);
+  if (onChain.attachedUsd != null) same("attached_usd", "attached payment", String(onChain.attachedUsd));
+  same("block_height", "block", onChain.blockHeight);
+  if (!(record.timestamp >= onChain.requestedAt - 5 && record.timestamp <= onChain.requestedAt + MAX_RUN_SECONDS)) {
+    problems.push(`its time (${record.timestamp}) is not within ${MAX_RUN_SECONDS / 60} minutes after the on-chain request (${onChain.requestedAt})`);
+  }
+  return problems;
+}
+
 const LAYERS = [
   ["record", "OutLayer's attestation record for this transaction"],
   ["judge", "It names a published judge build"],
@@ -150,7 +186,7 @@ const LAYERS = [
  * the transaction carries (the execution_requested event's input_data and the value OutLayer returned). Each step
  * is true (proven), false (fails) or null (unproven: the question could not be answered, which is not a pass).
  */
-export async function checkAttestation({ tx, input, output }, { dcap, fetchImpl = globalThis.fetch, api = ATTESTATION_API, rpc = TESTNET_STATE_RPCS } = {}) {
+export async function checkAttestation({ tx, input, output, onChain }, { dcap, fetchImpl = globalThis.fetch, api = ATTESTATION_API, rpc = TESTNET_STATE_RPCS } = {}) {
   const found = new Map();
   const set = (id, ok, detail) => found.set(id, { ok, detail });
   const report = { ok: false, steps: [] };
@@ -171,9 +207,18 @@ export async function checkAttestation({ tx, input, output }, { dcap, fetchImpl 
     set("record", false, `the record served is for ${record?.transaction_hash ?? "no transaction"}, not ${tx}`);
     return finish("not checked: the record is for another transaction");
   }
+  if (!onChain) {
+    set("record", null, "the transaction's own request could not be read, so the record's fields cannot be tied to it");
+    return finish("not checked: the record is not tied to the transaction");
+  }
+  const problems = recordProblems(record, onChain);
+  if (problems.length) {
+    set("record", false, `it does not match the transaction: ${problems.join("; ")}`);
+    return finish("not checked: the record does not match the transaction");
+  }
   report.record = record;
   report.executedAt = when(record.timestamp);
-  set("record", true, `task ${record.task_id}, run at ${report.executedAt}, asked by ${record.caller_account_id ?? "?"}`);
+  set("record", true, `task ${record.task_id}, run at ${report.executedAt}; its caller, request, wasm, secrets and block match the transaction`);
   set("judge", PUBLISHED_JUDGES.has(record.wasm_hash),
     PUBLISHED_JUDGES.has(record.wasm_hash) ? `wasm sha256 ${record.wasm_hash.slice(0, 8)}..., ${PUBLISHED_JUDGES.get(record.wasm_hash)}` : `wasm sha256 ${record.wasm_hash}, not a published Judge on NEAR build`);
 
@@ -263,6 +308,38 @@ export async function checkAttestation({ tx, input, output }, { dcap, fetchImpl 
   return finish();
 }
 
+/** The run as the transaction itself records it: OutLayer's execution_requested event, and the block of that receipt. */
+export async function requestOnChain(tx, { rpc = TESTNET_ARCHIVAL_RPCS, fetchImpl = globalThis.fetch } = {}) {
+  for (const receipt of tx?.receipts_outcome ?? []) {
+    if (!OUTLAYER_ACCOUNTS.has(receipt.outcome?.executor_id)) continue;
+    for (const log of receipt.outcome.logs ?? []) {
+      if (!log.startsWith("EVENT_JSON:")) continue;
+      let event;
+      try {
+        event = JSON.parse(log.slice("EVENT_JSON:".length));
+      } catch {
+        continue;
+      }
+      if (event?.event !== "execution_requested") continue;
+      const request = JSON.parse(event.data[0].request_data);
+      const block = await rpcCall(rpc, "block", { block_id: receipt.block_hash }, fetchImpl);
+      const source = request.code_source?.WasmUrl ?? {};
+      return {
+        signer: request.sender_id,
+        requestId: request.request_id,
+        wasmHash: source.hash,
+        buildTarget: source.build_target,
+        secretsRef: request.secrets_ref ? `${request.secrets_ref.account_id}/${request.secrets_ref.profile}` : null,
+        projectId: request.project_id ?? null,
+        attachedUsd: request.attached_usd ?? null,
+        blockHeight: block?.header?.height,
+        requestedAt: Math.floor(Number(request.timestamp) / 1e9),
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Read a ruling transaction from NEAR archival nodes and check its attestation: the input is the execution_requested
  * event's input_data (rebuilt from the escrow when OutLayer kept it in state), the output is the value the OutLayer
@@ -271,9 +348,11 @@ export async function checkAttestation({ tx, input, output }, { dcap, fetchImpl 
 export async function checkTransactionAttestation(txHash, signer, { dcap, fetchImpl = globalThis.fetch, archival = TESTNET_ARCHIVAL_RPCS, rpc = TESTNET_STATE_RPCS, api = ATTESTATION_API } = {}) {
   let input = null;
   let output = null;
+  let onChain = null;
   let readError = null;
   try {
     const tx = await fetchTransaction(txHash, signer, { rpc: archival, fetchImpl });
+    onChain = await requestOnChain(tx, { rpc: archival, fetchImpl });
     const ruling = findRuling(tx);
     if (!ruling) readError = "the transaction never asked OutLayer for a run";
     else {
@@ -284,7 +363,7 @@ export async function checkTransactionAttestation(txHash, signer, { dcap, fetchI
   } catch (e) {
     readError = e.message;
   }
-  const report = await checkAttestation({ tx: txHash, input, output }, { dcap, fetchImpl, api, rpc });
+  const report = await checkAttestation({ tx: txHash, input, output, onChain: onChain ?? undefined }, { dcap, fetchImpl, api, rpc });
   if (readError) {
     report.readError = readError;
     for (const s of report.steps) if ((s.id === "input" || s.id === "output") && s.ok === null) s.detail = `the transaction could not be read: ${readError}`;
