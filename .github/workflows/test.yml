@@ -107,16 +107,17 @@ jobs:
         working-directory: contract
         run: cargo test --test integration --locked -- --test-threads=1
   contract-build-macos:
-    # The deployed escrow was built on macOS on Apple silicon with cargo-near 0.22.0. This job rebuilds it with the
-    # path-safe command in contract/BUILD.md and checks the bytes against the SHA-256 BUILD.md publishes (the code
-    # hash NEAR reports for judgenear-escrow.testnet is the same hash in base58).
+    # The deployed escrow and the judge were built on macOS on Apple silicon. This job runs the README's one-liner,
+    # scripts/reproduce.sh, which rebuilds both with the path-safe commands and checks the bytes against the published
+    # SHA-256s (judge-wasm/release/judge.wasm.sha256 and contract/BUILD.md; the code hash NEAR reports for
+    # judgenear-escrow.testnet is the escrow's in base58).
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32-wasip1
       - name: cargo-near 0.22.0 (release binary, pinned SHA-256)
         run: |
           curl -LsSf -o cargo-near.tar.gz https://github.com/near/cargo-near/releases/download/cargo-near-v0.22.0/cargo-near-aarch64-apple-darwin.tar.gz
@@ -124,16 +125,8 @@ jobs:
           mkdir -p cargo-near-bin && tar xzf cargo-near.tar.gz -C cargo-near-bin
           install -m 0755 "$(find cargo-near-bin -type f -name cargo-near | head -1)" "$HOME/.cargo/bin/cargo-near"
           cargo near --version
-      - name: the escrow build reproduces contract/BUILD.md
-        working-directory: contract
-        run: |
-          US=$'\x1f'
-          cargo near build non-reproducible-wasm \
-            --env "CARGO_ENCODED_RUSTFLAGS=-Clink-arg=-s${US}--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo${US}--remap-path-prefix=$PWD=/src"
-          want=$(grep -o 'SHA-256 hex: `[0-9a-f]\{64\}`' BUILD.md | head -1 | grep -o '[0-9a-f]\{64\}')
-          test -n "$want"
-          shasum -a 256 target/near/judge_escrow.wasm
-          echo "$want  target/near/judge_escrow.wasm" | shasum -a 256 -c -
+      - name: scripts/reproduce.sh rebuilds the judge and the escrow and matches both published hashes
+        run: bash scripts/reproduce.sh
   secrets:
     runs-on: ubuntu-latest
     steps:

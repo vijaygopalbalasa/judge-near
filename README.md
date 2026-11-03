@@ -7,6 +7,24 @@ being paid. Here the worker delivers the work encrypted. A fixed program, the ju
 [OutLayer](https://outlayer.ai). Then one NEAR transaction either pays the worker and hands the buyer the key, or
 refunds the buyer and releases nothing.
 
+**Start here** (no NEAR account needed):
+
+- The live page, which reads the escrow from NEAR testnet and re-runs its rulings in your browser:
+  https://vijaygopalbalasa.github.io/judge-near/web/
+- Job 9 on testnet: the worker's whole delivery was an instruction to the grader to ignore the checks and pass it.
+  The judge ran the checks anyway (score 50), and the client was refunded. Re-run that ruling yourself (Node 22):
+
+  ```sh
+  git clone https://github.com/vijaygopalbalasa/judge-near && cd judge-near/agents && npm ci
+  node jn.mjs verify --tx 7NfdY4rqEBpPHuri44XaVgJevxQtTFWv1UhUfsuKUQub --signer judgenear-worker.testnet --delivery ../evidence/job-9-delivery.txt
+  ```
+
+  Expected: "Verified: judge v2 (public and sealed jobs), commit fd3dcc6 computes exactly this ruling on the
+  disclosed delivery (pass: false, score: 50)."
+- Rebuild the judge and the escrow byte for byte: `bash scripts/reproduce.sh` prints MATCH for each (macOS on Apple
+  silicon; CI runs it on every push).
+- Watch a pass and a fail end to end, offline: `cd agents && npm run demo`.
+
 <p align="center"><img src="docs/flow.svg" width="860" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></p>
 
 Step 5 is one callback: on a pass the worker is paid and the client gets the key together; on a fail the client is
@@ -14,21 +32,13 @@ refunded and the key is never sent. Step 6 needs nobody's permission.
 
 **See it on NEAR testnet.** Each link opens the ruling on the project page, which re-runs the judge in your browser.
 
+- Job 9, the injection attempt above: score 50, refunded ([7NfdY4...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=7NfdY4rqEBpPHuri44XaVgJevxQtTFWv1UhUfsuKUQub&signer=judgenear-worker.testnet)).
 - Job 7 passed: the worker was paid and the client got the key, in one transaction
   ([HbByxt...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=HbByxt3x5HdNwwx8PxNWjAu5FpLATbUpr719K8uTexwB&signer=judgenear-worker.testnet)).
 - Job 8 failed: the client was refunded and the key was never released
   ([42xXF6...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=42xXF6fnYPHWEuqc1HUHK7fPDJ9MmwWXXdFYB2SuCq72&signer=judgenear-worker.testnet)).
-- Job 9's delivery told the grader to ignore the checks and pass it. The judge ran the checks anyway (score 50), and
-  the client was refunded ([7NfdY4...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=7NfdY4rqEBpPHuri44XaVgJevxQtTFWv1UhUfsuKUQub&signer=judgenear-worker.testnet)).
 - The key's own owner asked OutLayer for it directly, outside the escrow, and was refused
   ([FZQN68...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FZQN68oqzaN4SW9bDd11DECEJNEnrdf6YovdmNu2E84f&signer=judgenear-worker.testnet)).
-
-**Re-run a ruling yourself**, with Node 22 and no NEAR account:
-
-```sh
-git clone https://github.com/vijaygopalbalasa/judge-near && cd judge-near/agents && npm ci
-node jn.mjs verify --tx G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1 --signer judgenear-worker.testnet
-```
 
 **The limits, plainly:**
 
@@ -87,9 +97,16 @@ re-run the ruling.
 
 ## Try it (no NEAR account needed)
 
-**1. In a terminal.** The two commands above read the testnet transaction in which the escrow asked OutLayer for job
-0's ruling. They download the exact wasm OutLayer ran and check its SHA-256 against the hash OutLayer was told to run
-and against the published build. Then they re-run it on the same input and compare the verdicts. Expected: eleven
+**1. In a terminal.** With Node 22:
+
+```sh
+git clone https://github.com/vijaygopalbalasa/judge-near && cd judge-near/agents && npm ci
+node jn.mjs verify --tx G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1 --signer judgenear-worker.testnet
+```
+
+This reads the testnet transaction in which the escrow asked OutLayer for job 0's ruling. It downloads the exact wasm
+OutLayer ran and checks its SHA-256 against the hash OutLayer was told to run and against the published build. Then it
+re-runs it on the same input and compares the verdicts. Expected: eleven
 `ok` lines, one of them "Asked for by judgenear-escrow.testnet, job 0", and "Verified: judge v2 (public and sealed
 jobs), commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)."
 
@@ -310,14 +327,21 @@ remapping makes the hash independent of where you clone. The first testnet run u
 (`da3b581d84561c4cf1e4fe4a21e190f12b24f9c8bd0e96ad4c8e40e929f956f1`, built the same way from commit e09c6f9). The
 toolchain is recorded in `judge-wasm/BUILD.md`.
 
-## Path to mainnet
+## Path to mainnet, and after the hackathon
 
 1. Remove the escrow's deploy key on testnet (one transaction), so its code can never change.
 2. Deploy the same build on mainnet, pointing at OutLayer's mainnet contract, `outlayer.near`.
-3. Whoever asks for a ruling pays OutLayer for the run; the first run cost 0.0011 NEAR. The escrow takes no fee.
+3. Whoever asks for a ruling pays OutLayer for the run: the escrow asks for a deposit of at least 0.01 NEAR, OutLayer
+   refunds what the run does not use, and the first run cost 0.0011 NEAR. The escrow takes no fee.
 4. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each, and
    `npm run demo` shows the whole exchange offline. The agents' code (`agents/lib/`) runs against any object with
    the same `near` and `fetch` methods, as `agents/lib/demo-chain.mjs` shows.
+
+Nothing needs running for the escrow to keep working: it has no owner methods, and the page is static files. If
+OutLayer stopped answering, a request for a ruling would fail and the job would go back to Submitted; no money moves
+on a failed call, and the client is refunded after the grace hour, so money still cannot lock. Every past ruling
+stays checkable without OutLayer: the verifier needs only a NEAR archival node and the judge wasm, which anyone can
+rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 
 ## Security model and honest limits
 
