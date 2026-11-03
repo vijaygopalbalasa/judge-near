@@ -80,8 +80,10 @@ export async function runDemo({ out = console.log } = {}) {
     ? "=> Refunded: the client was refunded and the key was never released, so the report stays sealed."
     : `=> unexpected: ${JSON.stringify(fail)}`);
   out("");
-  out("Both runs: the worker deleted its key from the vault once the job settled. The same agents run on testnet with");
-  out("node agent.mjs worker|client (see the README, \"Two agents, no human\").");
+  out(pass.vaultEmpty && fail.vaultEmpty
+    ? "Both runs: the worker deleted its key from the vault once the job settled."
+    : "unexpected: a key was left in the vault after a settled job.");
+  out("The same agents run on testnet with node agent.mjs worker|client (see the README, \"Two agents, no human\").");
   return { pass, fail };
 }
 

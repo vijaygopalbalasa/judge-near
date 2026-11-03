@@ -63,6 +63,8 @@ test("describeCheck says what each kind of check asks, in plain words", () => {
   assert.equal(describeCheck({ kind: "length", params: { min: 3, max: 40 } }), "3 to 40 words", "the judge counts words when unit is left out");
   assert.equal(describeCheck({ kind: "contains", params: { all: ["refund window", "settlement time"] } }), 'contains "refund window" and "settlement time"');
   assert.equal(describeCheck({ kind: "schema", params: { required: ["title", "sources"], types: { title: "string", sources: "number" } } }), "a JSON object with title (string) and sources (number)");
+  assert.equal(describeCheck({ kind: "schema", params: { required: ["title"], types: { title: "string", sources: "number" } } }), "a JSON object with title (string); if present, sources (number)", "a typed field that is not required is still checked");
+  assert.equal(describeCheck({ kind: "schema", params: { types: { sources: "number" } } }), "a JSON object; if present, sources (number)");
   assert.equal(describeCheck({ kind: "checksum", params: { sha256: "ab".repeat(32) } }), "SHA-256 is abababab...");
   assert.equal(describeCheck({ kind: "json", params: { shape: { type: "array" } } }), "JSON that matches the given shape");
 });

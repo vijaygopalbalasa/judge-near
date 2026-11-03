@@ -79,7 +79,7 @@ const MAX_PAGES = 100;
 /** FastNEAR's transaction index for testnet, used only to find ruling transactions (README, trust list). */
 export const TESTNET_TX_INDEX = "https://tx.test.fastnear.com";
 const INDEX_LIMIT = 200;
-const INDEX_MAX_PAGES = 10;
+const INDEX_MAX_PAGES = 50; // the newest 10,000 transactions; the index lists newest first
 const INDEX_BATCH = 10;
 /** Finding rulings never holds up the page (it draws the jobs first), so the index gets more time than an RPC call. */
 const INDEX_TIMEOUT_MS = 20_000;
@@ -155,7 +155,9 @@ export async function discoverRulings(escrow = ESCROW, { index = TESTNET_TX_INDE
   for (let page = 0; page < INDEX_MAX_PAGES; page++) {
     const listed = await indexPost(index, "/v0/account", { account_id: escrow, limit: INDEX_LIMIT, ...(token === undefined ? {} : { resume_token: token }) }, fetchImpl, timeoutMs, retryDelayMs);
     for (const t of Array.isArray(listed?.account_txs) ? listed.account_txs : []) {
-      if (t?.is_receiver && t?.is_function_call && typeof t.transaction_hash === "string" && !hashes.includes(t.transaction_hash)) hashes.push(t.transaction_hash);
+      // A failed transaction is never a ruling (every ruling transaction succeeds, key_missing ones included), so a
+      // flood of refused calls costs no detail requests.
+      if (t?.is_receiver && t?.is_function_call && t?.is_success !== false && typeof t.transaction_hash === "string" && !hashes.includes(t.transaction_hash)) hashes.push(t.transaction_hash);
     }
     token = listed?.resume_token ?? undefined;
     if (token === undefined || token === null) break;

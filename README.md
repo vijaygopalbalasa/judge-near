@@ -306,7 +306,7 @@ mutation runs.
 | Command | Expected |
 |---|---|
 | `cd judge-wasm && cargo test --locked` | 38 passed (rustup installs the pinned rustc 1.99.1) |
-| `node --test web/test/*.test.mjs` | 67 passed (Node 22 or newer, no dependencies) |
+| `node --test web/test/*.test.mjs` | 68 passed (Node 22 or newer, no dependencies) |
 | `cd judge-wasm && bash scripts/fuel-check.sh 3000000000 release/judge.wasm` | all 21 adversarial inputs (6 sealed) finish under 3B instructions; needs `wasmtime` |
 | `cd contract && cargo test --lib --locked` | 116 passed; building the test dependencies downloads the NEAR sandbox (about 29 MB) once, unless `NEAR_SANDBOX_BIN_PATH` names one already on disk |
 | `cd contract && cargo test --test integration -- --test-threads=1` | 14 passed, 3 to 8 minutes; needs [cargo-near](https://github.com/near/cargo-near) 0.22 (`cargo install cargo-near --version 0.22.0 --locked`), which the tests use to build the escrow |
@@ -357,9 +357,10 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
   that. Also trusted: OutLayer's keystore coordinator (the worker encrypts its key to the public key it serves over
   HTTPS; this tool does not check an attestation for it), OutLayer's contract (its owner can upgrade it), and the vault
   rule as OutLayer enforces it (off chain: a refusal is an OutLayer event, not a contract revert). The verifier trusts
-  the RPC node it reads. To list rulings, the page asks FastNEAR's transaction index for the escrow's transactions; an
-  index that left one out could hide a ruling, but it cannot make one pass, because Verify reads each ruling from NEAR
-  archival nodes. The judge file's host (GitHub) is not trusted: OutLayer and the verifier check its SHA-256.
+  the RPC node it reads. To list rulings, the page asks FastNEAR's transaction index for the escrow's newest 10,000
+  transactions, skipping failed ones. An index that left one out, or a flood of other calls that pushed one past that
+  window, could hide a ruling from the list, but nothing can make one pass, because Verify reads each ruling from NEAR
+  archival nodes. A ruling another contract asked for is shown in amber, not green. The judge file's host (GitHub) is not trusted: OutLayer and the verifier check its SHA-256.
 - **What the judge can check:** properties a program can verify (length, terms, JSON structure, checksums). It does
   not judge truth, taste or open-ended quality ([above](#what-the-judge-checks-and-what-it-cannot)).
 - **What is public:** in sealed jobs the criteria, the per-check results and the hashes are on chain; the delivery and

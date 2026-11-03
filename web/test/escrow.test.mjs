@@ -249,7 +249,7 @@ test("discoverRulings finds the escrow's rulings through FastNEAR's transaction 
   assert.ok(batches.length >= 4 && batches.every((b) => b.body.tx_hashes.length <= 10), "transactions are asked for in batches of at most 10, all at once");
 });
 
-test("discoverRulings reads every page of the index (resume_token), stops after ten pages, and fails loudly on an HTTP error", async () => {
+test("discoverRulings reads every page of the index (resume_token), stops after fifty pages, and fails loudly on an HTTP error", async () => {
   const all = indexFixture.account.account_txs;
   const pages = [all.slice(0, 15), all.slice(15, 30), all.slice(30)];
   const tokens = [];
@@ -273,7 +273,7 @@ test("discoverRulings reads every page of the index (resume_token), stops after 
     return ok({ transactions: [] });
   };
   assert.deepEqual(await discoverRulings(ESCROW, { fetchImpl: endless }), []);
-  assert.equal(calls, 10);
+  assert.equal(calls, 50, "at most fifty pages of 200: the newest 10,000 transactions");
   const down = async () => ({ ok: false, status: 503, json: async () => ({}) });
   await assert.rejects(discoverRulings(ESCROW, { fetchImpl: down }), /transaction index.*HTTP 503/);
 });
@@ -302,6 +302,19 @@ test("mergeRulings: the index's rulings plus any listed one it left out; the lis
   assert.deepEqual(mergeRulings(listed, found).map((r) => r.tx), ["A", "B", "C"]);
   assert.equal(mergeRulings(listed, found).at(-1).keyMissing, true);
   assert.deepEqual(mergeRulings(listed, null), listed);
+});
+
+test("discoverRulings skips transactions that failed, so a flood of refused calls never reaches the detail requests", async () => {
+  const flood = Array.from({ length: 300 }, (_, i) => ({ transaction_hash: `Fail${String(i).padStart(40, "x")}`, tx_block_height: 1, is_receiver: true, is_function_call: true, is_success: false }));
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith("/v0/account")) return ok({ account_txs: [...flood, ...indexFixture.account.account_txs] });
+    asked.push(...body.tx_hashes);
+    return ok({ transactions: body.tx_hashes.map((h) => indexFixture.transactions[h]).filter(Boolean) });
+  };
+  assert.equal((await discoverRulings(ESCROW, { fetchImpl })).length, 12);
+  assert.equal(asked.filter((h) => h.startsWith("Fail")).length, 0);
 });
 
 test("discoverRulings asks again, once, when an index request fails, as a busy index sometimes does", async () => {

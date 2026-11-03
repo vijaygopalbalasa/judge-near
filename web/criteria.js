@@ -137,8 +137,11 @@ export function describeCheck(check) {
       return `contains ${andList((Array.isArray(p.all) ? p.all : []).map((t) => JSON.stringify(t)))}${p.wholeWords ? " as whole words" : ""}`;
     case "schema": {
       const types = isObject(p.types) ? p.types : {};
-      const fields = (Array.isArray(p.required) ? p.required : []).map((f) => (types[f] ? `${f} (${types[f]})` : f));
-      return fields.length ? `a JSON object with ${andList(fields)}` : "a JSON object";
+      const required = Array.isArray(p.required) ? p.required : [];
+      const fields = required.map((f) => (types[f] ? `${f} (${types[f]})` : f));
+      // The judge checks a typed field's type whenever the field is there, required or not.
+      const optional = Object.keys(types).filter((f) => !required.includes(f)).map((f) => `${f} (${types[f]})`);
+      return `${fields.length ? `a JSON object with ${andList(fields)}` : "a JSON object"}${optional.length ? `; if present, ${andList(optional)}` : ""}`;
     }
     case "checksum":
       return `SHA-256 is ${String(p.sha256 ?? "").slice(0, 8)}...`;

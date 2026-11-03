@@ -74,8 +74,13 @@ function showOutcome(summary, report) {
     line = "Not verified: see the step that failed below.";
   }
   if (report.note) meaning = `${meaning} ${report.note}`.trim();
-  // A ruling another contract asked for can pass every check; say plainly that it is not one of this escrow's.
+  // A ruling another contract asked for can pass every check; it is not one of this escrow's, so it is not shown green
+  // and the headline says so first.
   if (report.asker && report.asker.account !== ESCROW) {
+    if (outcome === "verified") {
+      summary.className = "summary note";
+      line = `Not a ruling of ${ESCROW}. ${line}`;
+    }
     meaning = `${meaning} ${report.asker.account} asked for this ruling, not ${ESCROW}. The checks prove what the published judge computes on this input; they say nothing about what that account did with the verdict.`.trim();
   }
   summary.replaceChildren(document.createTextNode(line), ...(meaning ? [el("span", "explain", meaning)] : []));
