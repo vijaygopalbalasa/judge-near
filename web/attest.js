@@ -171,6 +171,20 @@ export function recordProblems(record, onChain) {
   return problems;
 }
 
+/**
+ * The window Intel's collateral covers, from the signed TCB info and QE identity themselves (not the server's flag):
+ * from the later issue date to the earlier next-update date. dcap-qvl refuses data that had expired by the moment it
+ * checks, but not data issued after that moment, so the page checks the start itself.
+ */
+export function signedWindow(collateral) {
+  const dates = [collateral.tcb_info, collateral.qe_identity].map((text) => {
+    const doc = JSON.parse(text);
+    const inner = doc.tcbInfo ?? doc.enclaveIdentity ?? doc;
+    return [Date.parse(inner.issueDate) / 1000, Date.parse(inner.nextUpdate) / 1000];
+  });
+  return { from: Math.max(...dates.map((d) => d[0])), until: Math.min(...dates.map((d) => d[1])) };
+}
+
 const LAYERS = [
   ["record", "OutLayer's attestation record for this transaction"],
   ["judge", "It names a published judge build"],
@@ -259,9 +273,12 @@ export async function checkAttestation({ tx, input, output, onChain }, { dcap, f
     return finish();
   }
   let verified;
+  let window = null;
   try {
     if (!dcap) throw new Error("no DCAP verifier was loaded");
-    verified = dcap.verify(quote, JSON.parse(collateral.collateral), record.timestamp);
+    const signed = JSON.parse(collateral.collateral);
+    verified = dcap.verify(quote, signed, record.timestamp);
+    window = signedWindow(signed);
   } catch (e) {
     set("authenticity", false, `the quote did not verify: ${String(e?.message ?? e)}`);
     unprovenQuote("verification failed");
@@ -275,10 +292,11 @@ export async function checkAttestation({ tx, input, output, onChain }, { dcap, f
   }
   report.tcbStatus = verified.status;
   const advisories = Array.isArray(verified.advisory_ids) && verified.advisory_ids.length ? ` (advisories: ${verified.advisory_ids.join(", ")})` : "";
-  const against = `checked against Intel's TCB data valid when the run happened (${collateral.valid_from} to ${collateral.valid_until})`;
+  const span = `${when(window.from)} to ${when(window.until)}`;
+  const covered = Number.isFinite(window.from) && Number.isFinite(window.until) && window.from <= record.timestamp && record.timestamp <= window.until;
   if (verified.status !== "UpToDate") set("authenticity", null, `the signature chain is valid, but Intel reports TCB status ${verified.status}${advisories}`);
-  else if (collateral.covers_requested_time === false) set("authenticity", null, `no Intel collateral covers ${report.executedAt}; the nearest window does not show a revocation inside the gap`);
-  else set("authenticity", true, `Intel signature chain valid, TCB UpToDate, ${against}`);
+  else if (!covered) set("authenticity", null, `Intel's data here is valid ${span}, which does not cover the run (${report.executedAt}), so a revocation in the gap would not show`);
+  else set("authenticity", true, `Intel signature chain valid, TCB UpToDate, as of the run's own moment, against Intel's data valid ${span}; checking later gives the same answer`);
 
   const lower = (v) => String(v).toLowerCase();
   const measurements = { mrtd: lower(td.mr_td), rtmr0: lower(td.rt_mr0), rtmr1: lower(td.rt_mr1), rtmr2: lower(td.rt_mr2), rtmr3: lower(td.rt_mr3) };

@@ -137,9 +137,37 @@ test("measurements that are not approved fail Identity", async () => {
   assert.equal(verdicts(await run(b, fakeNet(b, { approved: false }))).identity, false);
 });
 
-test("collateral that does not cover the run's moment leaves Authenticity unproven, not passed", async () => {
+// dcap-qvl rejects Intel data that had expired by the run's moment, but not data issued after it, so the page reads
+// the issue and next-update dates from the signed TCB info and QE identity itself.
+test("Intel data issued after the run leaves Authenticity unproven, read from the signed dates, not the server's flag", async () => {
   const { b } = bundles[0];
-  assert.equal(verdicts(await run(b, fakeNet(b, { collateral: { covers_requested_time: false } }))).authenticity, null);
+  const later = JSON.parse(b.collateral);
+  later.tcb_info = later.tcb_info.replace(/"issueDate":"[^"]+"/, `"issueDate":"${new Date((b.attestation.timestamp + 86400) * 1000).toISOString().replace(/\.\d+Z$/, "Z")}"`);
+  // A verifier that, like dcap-qvl, does not look at issue dates: it passes on the real collateral.
+  const lenient = { verify: (q) => dcap.verify(q, JSON.parse(b.collateral), b.attestation.timestamp) };
+  const report = await checkAttestation(
+    { tx: b.attestation.transaction_hash, input: b.input_raw, output: b.output_raw, onChain: onChainOf(b.attestation) },
+    { dcap: lenient, fetchImpl: fakeNet(b, { collateral: { collateral: JSON.stringify(later), covers_requested_time: true } }).fetchImpl, rpc: ["https://rpc.example"] },
+  );
+  const step = report.steps.find((st) => st.id === "authenticity");
+  assert.equal(step.ok, null);
+  assert.match(step.detail, /does not cover the run/);
+});
+
+test("Intel data that had expired by the run's moment fails Authenticity", async () => {
+  const { b } = bundles[0];
+  const expired = { verify: () => { throw new Error("TCBInfo expired"); } };
+  const report = await checkAttestation(
+    { tx: b.attestation.transaction_hash, input: b.input_raw, output: b.output_raw, onChain: onChainOf(b.attestation) },
+    { dcap: expired, fetchImpl: fakeNet(b).fetchImpl, rpc: ["https://rpc.example"] },
+  );
+  assert.equal(report.steps.find((st) => st.id === "authenticity").ok, false);
+});
+
+test("the real verifier refuses Intel data that had expired by the moment it checks", () => {
+  const { b } = bundles[0];
+  const until = Math.floor(Date.parse(b.collateral_info.valid_until) / 1000);
+  assert.throws(() => dcap.verify(decodeQuote(b.attestation), JSON.parse(b.collateral), until + 86400), /expired/);
 });
 
 test("a genuine quote whose platform Intel flags (TCB not UpToDate) leaves Authenticity unproven, not passed", async () => {
