@@ -89,9 +89,9 @@ re-run the ruling.
 
 **1. In a terminal.** The two commands above read the testnet transaction in which the escrow asked OutLayer for job
 0's ruling. They download the exact wasm OutLayer ran and check its SHA-256 against the hash OutLayer was told to run
-and against the published build. Then they re-run it on the same input and compare the verdicts. Expected: ten `ok`
-lines and "Verified: judge v2 (public and sealed jobs), commit fd3dcc6 computes exactly this ruling (pass: true,
-score: 100)."
+and against the published build. Then they re-run it on the same input and compare the verdicts. Expected: eleven
+`ok` lines, one of them "Asked for by judgenear-escrow.testnet, job 0", and "Verified: judge v2 (public and sealed
+jobs), commit fd3dcc6 computes exactly this ruling (pass: true, score: 100)."
 
 Job 1 and job 4's first ruling (`key_missing`) verify the same way. A sealed ruling cannot be re-run without its
 delivery key: it prints the checks that need no key and ends with "not re-run" (exit status 1). Transactions are read
