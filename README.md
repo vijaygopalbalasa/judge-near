@@ -104,6 +104,7 @@ So it fits work whose acceptance test is its form or its exact content:
 | A language model as judge | Text in the delivery can steer it, and its ruling cannot be re-run byte for byte |
 | An optimistic escrow with a dispute window | Someone must watch, and post a bond to dispute |
 | A zero-knowledge contingent payment | A new circuit for every kind of task |
+| A marketplace's acceptance step: the buyer accepts, a timer accepts, or a resolver reads the work | The work is not held to a test written before it was done |
 | **Judge on NEAR** | Only checks a program can make; you trust the TEE and OutLayer |
 
 ## Try it (no NEAR account needed)
@@ -399,7 +400,11 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
    account's deploy key the same way, so its code can never change.
 2. Whoever asks for a ruling pays OutLayer for the run: the escrow asks for a deposit of at least 0.01 NEAR, OutLayer
    refunds what the run does not use, and the first run cost 0.0011 NEAR. The escrow takes no fee.
-3. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each, and
+3. NEAR's Agent Market already posts and pays jobs over an API. A job there is accepted by the buyer, by a timer when
+   the acceptance window ends, or by a resolver that reads the brief and the work
+   ([its docs](https://docs.market.near.ai/concepts/payments-and-disputes)). Criteria checked by this judge would give
+   such a job a pass or fail test written before the work, which anyone can re-run.
+4. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each, and
    `npm run demo` shows the whole exchange offline. The agents' code (`agents/lib/`) runs against any object with
    the same `near` and `fetch` methods, as `agents/lib/demo-chain.mjs` shows.
 
