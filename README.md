@@ -41,14 +41,14 @@ refunded and the key is never sent. Step 6 needs nobody's permission.
   ([42xXF6...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=42xXF6fnYPHWEuqc1HUHK7fPDJ9MmwWXXdFYB2SuCq72&signer=judgenear-worker.testnet)).
 - The key's own owner asked OutLayer for it directly, outside the escrow, and was refused
   ([FZQN68...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FZQN68oqzaN4SW9bDd11DECEJNEnrdf6YovdmNu2E84f&signer=judgenear-worker.testnet)).
+- The escrow's only deploy key was deleted on Nov 3, so its code can never change
+  ([2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet)).
 
 **The limits, plainly:**
 
 - Testnet only, and no outside users yet.
 - The judge checks what a program can check: fields, length, terms, JSON shape, an exact SHA-256. It cannot tell
   whether a report's facts are true ([more below](#what-the-judge-checks-and-what-it-cannot)).
-- The escrow account still has its deploy key, so its owner could replace the code. It was used once, to deploy a
-  fix (below). Removing it is one transaction.
 - You trust Intel TDX and OutLayer: its workers, its keystore and its contract.
 
 Built at NEAR HACKATHON (Nov 1 to 14, 2026). Tracks: Privacy & Private AI, Agent Economy, AI Security & Defense.
@@ -125,9 +125,9 @@ http://localhost:8080/web/.
 
 - **Try the judge** runs it on criteria and a delivery you type, after checking that the judge file is a published
   build. It has four examples and names the problem in criteria the judge calls invalid.
-- **Jobs on the escrow** reads it live. Expected: "Runs the published escrow build" (code hash
-  `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`) and "Its judge is judge v2" in green, and an amber line while the
-  account still has its deploy key. Below that, one card per job, newest first, each with its rulings. FastNEAR's
+- **Jobs on the escrow** reads it live. Expected, in green: "Runs the published escrow build" (code hash
+  `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`), "Its judge is judge v2" and "No full-access key: nobody can
+  replace its code". Below that, one card per job, newest first, each with its rulings. FastNEAR's
   transaction index finds the rulings; the list in `web/escrow.js` stands in when it does not answer.
 - **Verify** on job 0's ruling gives eleven green checks and "Verified". A sealed ruling without its key gives nine
   green checks, a circle on the re-run, and "Consistent, not re-run". Jobs 2 to 4 sealed texts that jobs 0 and 1
@@ -221,7 +221,8 @@ race ([the limits](#security-model-and-honest-limits) say which). It checked tha
 back unchanged. NEAR reports its code hash as `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`, the build in
 `contract/BUILD.md`. Its `get_judge` names judge v2 (URL pinned to commit fd3dcc6, SHA-256 `911b8a35...`). The jobs
 below ran under v2; their rulings verify the same way, because the verifier reads each ruling from its own
-transaction. The account still has its deploy key; see the limits below. Each job ran between `judgenear-client.testnet` and
+transaction. On Nov 3 at 08:50 UTC its only deploy key was deleted ([2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet)), so its code can no longer
+change. Each job ran between `judgenear-client.testnet` and
 `judgenear-worker.testnet`, 0.5 NEAR each: jobs 0 to 4 step by step with `agents/jn.mjs` and jobs 5 to 8 by the two
 agents ([below](#two-agents-no-human)), on Nov 2 2026 under v2; jobs 9 and 10 with `agents/jn.mjs` under v3 (job 9 at
 22:05 UTC that day, job 10 on Nov 3).
@@ -335,11 +336,11 @@ toolchain is recorded in `judge-wasm/BUILD.md`.
 
 ## Path to mainnet, and after the hackathon
 
-1. Remove the escrow's deploy key on testnet (one transaction), so its code can never change.
-2. Deploy the same build on mainnet, pointing at OutLayer's mainnet contract, `outlayer.near`.
-3. Whoever asks for a ruling pays OutLayer for the run: the escrow asks for a deposit of at least 0.01 NEAR, OutLayer
+1. Deploy the same build on mainnet, pointing at OutLayer's mainnet contract, `outlayer.near`, and delete that
+   account's deploy key the same way, so its code can never change.
+2. Whoever asks for a ruling pays OutLayer for the run: the escrow asks for a deposit of at least 0.01 NEAR, OutLayer
    refunds what the run does not use, and the first run cost 0.0011 NEAR. The escrow takes no fee.
-4. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each, and
+3. Any agent that can run a command can use it today: `jn.mjs` covers every step, with `--dry-run` on each, and
    `npm run demo` shows the whole exchange offline. The agents' code (`agents/lib/`) runs against any object with
    the same `near` and `fetch` methods, as `agents/lib/demo-chain.mjs` shows.
 
@@ -380,11 +381,10 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
   instructions and 22 ms; the escrow asks OutLayer for 50 billion instructions and 30 seconds
   (`judge-wasm/RESOURCE-LIMITS.md`).
 - **The escrow account:** OutLayer's keystore rule names the escrow account, so a worker also trusts the code that
-  account runs. `agents/` checks its code hash and judge before every live step, but an account that still has a
-  full-access key can have its code replaced by its owner. `judgenear-escrow.testnet` still has its deploy key; its
-  owner used it once, on Nov 2 2026 at 21:55 UTC, to deploy v3. The page shows this in amber and turns it green once the key is
-  gone. Settled jobs keep no key in the vault (the worker
-  deletes it), so a replaced escrow could not read them.
+  account runs. `agents/` checks its code hash and judge before every live step. An account with a full-access key
+  can have its code replaced by its owner. `judgenear-escrow.testnet` had one deploy key: it was used once, on Nov 2
+  2026 at 21:55 UTC, to deploy v3, and deleted on Nov 3 at 08:50 UTC ([2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet)). The account has no keys
+  now, so nobody can replace its code; the page checks this live.
 - **Testnet only** so far. No third-party users yet.
 
 ## Repository map

@@ -148,8 +148,8 @@
         worker's TEE when it registers; this page does not check an attestation.</li>
       <li><strong>OutLayer's keystore and contract</strong>, to hand a sealed job's key only to this judge, called by this
         escrow. On testnet the key's owner and the client asked directly and were refused; the rule is enforced off chain.</li>
-      <li><strong>The escrow's code</strong>, whose hash is shown above and pinned in <code>contract/BUILD.md</code>. Until
-        its deploy key is removed, its owner could replace it.</li>
+      <li><strong>The escrow's code</strong>, whose hash is shown above and pinned in <code>contract/BUILD.md</code>. Its
+        deploy key was deleted on Nov 3 2026, so nobody can replace it.</li>
       <li><strong>NEAR nodes</strong>, for what this page reads. FastNEAR's transaction index only finds rulings; it cannot
         make one pass, because Verify reads each ruling from NEAR archival nodes.</li>
       <li><strong>Not the judge file's host</strong>: the page checks the file's SHA-256 before running it.</li>
