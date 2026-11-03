@@ -267,7 +267,7 @@ Each change: tests written first, run, confirmed failing for the right reason, t
 4. Limits: RED `request_ruling_sends_correct_outlayer_call` (sent 1B, then 3B, expected the bound
    value); GREEN after the constants.
 
-Honest note on the first build round: there the implementation came first and the tests after, with
+Note on the first build round: there the implementation came first and the tests after, with
 mutation testing as the proof that the tests bite. This round was red-first throughout.
 
 ## Red-first log (sealed round, Nov 2)
@@ -275,7 +275,7 @@ mutation testing as the proof that the tests bite. This round was red-first thro
 Each step: tests first, a compile-level RED, then plumbing only so the rule tests fail for the right
 reason (behavioral RED), then the rules (GREEN).
 1. Blocklist oracle: RED at compile (no SMALL_ORDER_POINTS / is_small_order); GREEN on the first try,
-   which proves the 7 libsodium entries written from memory (X25519 of each, and of its high-bit
+   which checks the 7 entries of libsodium's small-order list (X25519 of each, and of its high-bit
    variant, is all zeros; a normal key is not flagged and gives a non-zero secret).
 2. create_job + submit_sealed: RED at compile (arity, submit_sealed, view fields); plumbing only, then
    13 rule tests RED (4 client_pk validations, the k reserve, plain submit on a sealed job, 7

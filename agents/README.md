@@ -39,7 +39,7 @@ else. Then ask for a ruling again.
 
 ## Safety checks
 
-Live, every command except `open`, `status` and `verify` first checks the escrow it is about to use:
+Before any live step, every command except `open`, `status` and `verify` checks the escrow it is about to use:
 
 - the code hash NEAR reports for it must be the published escrow build (`../contract/BUILD.md`), and
 - its `get_judge` must name the published judge (`../judge-wasm/release/judge.wasm.sha256`).

@@ -3,7 +3,7 @@
 **Escrow for agent work: the payment and the work are released together, by a judge anyone can re-run.**
 
 When one agent hires another, the buyer won't pay before seeing the work, and the worker won't show the work before
-being paid. Here the worker delivers the work encrypted. A fixed program, the judge, checks it inside a TEE run by
+being paid. Here the worker delivers the work encrypted. A fixed program, the judge, checks it inside a TEE (a hardware-isolated enclave, here Intel TDX) run by
 [OutLayer](https://outlayer.ai). Then one NEAR transaction either pays the worker and hands the buyer the key, or
 refunds the buyer and releases nothing.
 
@@ -27,8 +27,7 @@ refunds the buyer and releases nothing.
 
 <p align="center"><img src="docs/flow.svg" width="860" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></p>
 
-Step 5 is one callback: on a pass the worker is paid and the client gets the key together; on a fail the client is
-refunded and the key is never sent. Step 6 needs nobody's permission.
+Step 5 is one callback. Step 6 needs nobody's permission.
 
 **See it on NEAR testnet.** Each link opens the ruling on the project page, which re-runs the judge in your browser.
 
@@ -44,14 +43,15 @@ refunded and the key is never sent. Step 6 needs nobody's permission.
 - The escrow's only deploy key was deleted on Nov 3, so its code can never change
   ([2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet)).
 
-**The limits, plainly:**
+**Limits:**
 
 - Testnet only, and no outside users yet.
 - The judge checks what a program can check: fields, length, terms, JSON shape, an exact SHA-256. It cannot tell
   whether a report's facts are true ([more below](#what-the-judge-checks-and-what-it-cannot)).
 - You trust Intel TDX and OutLayer: its workers, its keystore and its contract.
 
-Built at NEAR HACKATHON (Nov 1 to 14, 2026). Tracks: Privacy & Private AI, Agent Economy, AI Security & Defense.
+Built at NEAR HACKATHON (Nov 1 to 14, 2026), on check kinds ported from the author's earlier MIT-licensed engine
+([prior work](#prior-work)). Tracks: Privacy & Private AI, Agent Economy, AI Security & Defense.
 
 ## Why the judge is a program, not a language model
 
@@ -61,7 +61,7 @@ Built at NEAR HACKATHON (Nov 1 to 14, 2026). Tracks: Privacy & Private AI, Agent
 - **The worker knows the verdict in advance.** It runs the same judge before delivering, so an honest worker is never
   surprised.
 - **Anyone can re-run the ruling.** The judge has no network, clock or randomness. The same input gives the same
-  bytes, so a ruling is checked, not trusted.
+  bytes, so anyone can check a ruling instead of trusting it.
 
 ## What the judge checks, and what it cannot
 
@@ -71,7 +71,7 @@ are in [`docs/interface.md`](docs/interface.md#2-criteria-schema), section 2.
 
 It does not know whether the content is true. The criteria of job 8 pass a report with invented numbers as readily
 as an honest one. In jobs 6 and 8 the honest worker lost because it left out a field it had no fact for; a worker
-that made the field up would have been paid. Honesty there is the worker's choice, not the escrow's rule.
+that made the field up would have been paid. The escrow pays for passing the checks; it cannot reward honesty.
 
 So it fits work whose acceptance test is its form or its exact content:
 
@@ -95,9 +95,6 @@ So it fits work whose acceptance test is its form or its exact content:
 | An optimistic escrow with a dispute window | Someone must watch, and post a bond to dispute |
 | A zero-knowledge contingent payment | A new circuit for every kind of task |
 | **Judge on NEAR** | Only checks a program can make; you trust the TEE and OutLayer |
-
-Here the work stays encrypted until a fixed program passes it, payment and key move in one transaction, and anyone can
-re-run the ruling.
 
 ## Try it (no NEAR account needed)
 
@@ -124,7 +121,7 @@ GitHub Pages. Or serve it yourself from the repository root with `python3 -m htt
 http://localhost:8080/web/.
 
 - **Try the judge** runs it on criteria and a delivery you type, after checking that the judge file is a published
-  build. It has four examples and names the problem in criteria the judge calls invalid.
+  build. It comes with four examples, and if the judge rejects your criteria it says why.
 - **Jobs on the escrow** reads it live. Expected, in green: "Runs the published escrow build" (code hash
   `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`), "Its judge is judge v2" and "No full-access key: nobody can
   replace its code". Below that, one card per job, newest first, each with its rulings. FastNEAR's
@@ -149,7 +146,8 @@ NEAR account. `node agent.mjs preview` shows what the worker agent would deliver
   of the exact criteria and delivery. `eh` hashes the verdict's own fields; it names the verdict and proves nothing by
   itself, because the proof is re-running the judge.
 - **The escrow** (`contract/`) pins the judge's URL and SHA-256 at deployment and has no method to change them. Only
-  the client or the worker may ask for a ruling, and they pay a minimum fee, so rulings cannot stall a job. Delivered
+  the client or the worker may ask for a ruling, and each request must carry a minimum deposit, so cheap requests built
+  to fail cannot stall a job. Delivered
   work gets an hour of grace after the deadline before any refund. No refund is possible while a ruling runs, and a
   lost callback can never lock money.
 - **Sealed mode** (`docs/interface.md`, section 6) keeps the delivery encrypted. The worker's key is an OutLayer
@@ -185,8 +183,6 @@ between the parts is in [`docs/interface.md`](docs/interface.md).
   one calling contract (`Predecessor`), so only this judge, asked by this escrow, can open it.
 - **Yield and resume**: OutLayer parks the escrow's request with NEAR's yield and resumes it when the TEE run is done,
   so the escrow settles in the same transaction that asked for the ruling.
-- When an agent hires an agent, no human accepts the work, and a grader the payer controls is not neutral. This
-  escrow gives both sides a neutral judge that anyone can re-run.
 
 ## Evidence on testnet
 
@@ -210,14 +206,14 @@ the escrow was the caller OutLayer recorded, and the judge still read the worker
 instead of answering `key_missing`). The last two rows are the negative case, from `tools/vault-probe.mjs`. The key's
 owner and the client each called OutLayer themselves, with the published judge and job 5's secrets profile, and
 OutLayer refused both before running anything. So the rule is checked against the calling contract, not the signer or
-the owner. A third party's contract was not run; it would be another caller that is not the escrow.
+the owner. No third-party contract was tried as the caller.
 
 ### The escrow on testnet
 
 `judgenear-escrow.testnet` was deployed and initialised in one transaction,
 [FfrcKX...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FfrcKXWFetEq4pUt7WvoztNFQ1jsQusb2bP1rpdWoYva&signer=judgenear-escrow.testnet),
 with `tools/deploy-escrow.mjs`. On Nov 2 at 21:55 UTC the same tool replaced its code with v3, code only, [9YmrPJ...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=9YmrPJV8uRJhZ3YmVXkSmsiqhjjrpW3i52K9BFkNkXUS&signer=judgenear-escrow.testnet), to close a refund
-race ([the limits](#security-model-and-honest-limits) say which). It checked that `get_judge` and all nine jobs read
+race ([the limits](#security-model-and-limits) say which). It checked that `get_judge` and all nine jobs read
 back unchanged. NEAR reports its code hash as `HWowCok2UCH5XZsTBPYuaph3jPVjJEjbs2jhK2h7c94t`, the build in
 `contract/BUILD.md`. Its `get_judge` names judge v2 (URL pinned to commit fd3dcc6, SHA-256 `911b8a35...`). The jobs
 below ran under v2; their rulings verify the same way, because the verifier reads each ruling from its own
@@ -294,7 +290,7 @@ delivery, after the worker's own check said it would fail.
 | Part | State |
 |---|---|
 | Judge (Rust, `wasm32-wasip1`) | Works, v2 (public and sealed jobs): 305 parity vectors against the original engine and 42 sealed vectors, fuel-bounded; the build reproduces byte for byte on macOS on Apple silicon |
-| Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for twelve rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4 9 and 10 re-run in full on their disclosed text |
+| Judge on OutLayer testnet | Works: v1 called directly ([4VFvzo...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=4VFvzoQZEZf7DUZt1WnviReZVVsYYjFPSvtE6skr25jk&signer=judgeprotocol.testnet)) and v2 called by the escrow for twelve rulings; every public verdict is identical to a local run, every sealed one consistent without the key and identical with it, and jobs 2 to 4, 9 and 10 re-run in full on their disclosed text |
 | OutLayer vault rules for sealed keys | Checked on testnet with `tools/keystore-probe` and `tools/vault-probe.mjs`: only this judge build, called by the escrow, reads a key; the key's owner and the client asking directly were refused |
 | Verifier (`web/`, and `jn verify`) | Works: public rulings, sealed rulings with the key or on a disclosed delivery, and key_missing rulings; the page lists the escrow's jobs live, and for any other ruling it names who asked for it |
 | Escrow (near-sdk 5), public and sealed jobs | Works: 116 unit tests, 14 sandbox tests, 83 planted bugs caught; deployed as `judgenear-escrow.testnet` (v3 since Nov 2, 21:55 UTC), code hash matching `contract/BUILD.md` |
@@ -350,7 +346,7 @@ on a failed call, and the client is refunded after the grace hour, so money stil
 stays checkable without OutLayer: the verifier needs only a NEAR archival node and the judge wasm, which anyone can
 rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 
-## Security model and honest limits
+## Security model and limits
 
 - **What you trust:** Intel TDX and OutLayer's worker registration (each worker's TEE is checked once when it
   registers, and results arrive from registered worker keys), plus the published judge build. The attestation shows
@@ -400,6 +396,17 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 | `tools/deploy-escrow.mjs` | Deploys the published escrow build to a testnet account and initialises it, in one transaction |
 | `tools/vault-probe.mjs` | Asks OutLayer directly, not through the escrow, to run the judge on a sealed job's key; OutLayer must refuse |
 | `docs/interface.md` | Input, criteria, verdict, hashes, contract rules and sealed mode, in one place |
+
+## Built with
+
+- Judge (Rust, `wasm32-wasip1`): serde_json, sha2, chacha20poly1305, x25519-dalek and hkdf.
+- Escrow: near-sdk 5.30 and hex, built with cargo-near 0.22.0; its tests use near-workspaces 0.24, tokio, serde_json,
+  anyhow and x25519-dalek.
+- Agents: near-api-js 7.3.1. The fuel check and one agent test run the judge under wasmtime.
+- Page: plain HTML and JavaScript with no dependencies; it runs the judge through its own small WASI shim
+  (`web/wasi.js`).
+- Services: OutLayer (TEE runs and the vault), NEAR and FastNEAR RPC nodes, and FastNEAR's transaction index.
+- Baseline: the check kinds of the Judge Protocol engine (MIT), described under [Prior work](#prior-work).
 
 ## Prior work
 

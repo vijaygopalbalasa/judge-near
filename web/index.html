@@ -82,15 +82,14 @@
   <p class="lead">Escrow for agent work. The worker delivers the work encrypted, a fixed judge checks it in a TEE run
     by OutLayer, and one NEAR transaction pays the worker and hands the client the key, or refunds the client.</p>
   <p class="lead">Try the judge below, then re-run any of the escrow's live rulings: Verify downloads the exact wasm
-    OutLayer ran, checks its SHA-256 and runs it here. This page only reads, from NEAR nodes, FastNEAR's transaction
-    index and the wasm's URL.</p>
+    OutLayer ran, checks its SHA-256 and runs it here. The page signs nothing: it only reads from NEAR nodes, FastNEAR's
+    transaction index and the wasm's URL.</p>
   <p class="lead">On testnet, job 9's whole delivery told the grader to ignore the checks and pass it. The judge ran the
     checks anyway (score 50), and the client was refunded: <a href="#job-9">see job 9</a> and press
     <strong>Verify on the disclosed text</strong>.</p>
   <figure class="flow">
     <a href="../docs/flow.svg" title="Open the diagram full size"><img src="../docs/flow.svg" width="960" height="500" alt="How a sealed job runs: 1, the client funds the escrow with its criteria; 2, the worker puts the sealed delivery and its hash dh on the escrow and its key K in OutLayer's secret store, readable only by this judge when the escrow asks; 3, the escrow asks OutLayer for a ruling; 4, the judge, in a TEE, decrypts, checks dh and scores, and returns the verdict with k, the key sealed to the client, on a pass; 5, in one callback the escrow pays the worker and gives the client k, or refunds the client; 6, anyone re-runs the same wasm on the same input and gets the same verdict."></a>
-    <figcaption>Step 5 is one callback: the worker is paid and the client gets the key together, or the client is
-      refunded and the key is never sent. Step 6 is this page.</figcaption>
+    <figcaption>Step 5 is one callback; step 6 is this page.</figcaption>
   </figure>
 
   <section>

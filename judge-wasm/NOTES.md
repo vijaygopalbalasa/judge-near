@@ -38,8 +38,8 @@ JN_KEY environment variable), writes the verdict JSON on stdout, per
 - Crypto crates with default features off: chacha20poly1305 (alloc only),
   x25519-dalek (its free `x25519()` clamps per RFC 7748, used for both scalar
   multiplications), hkdf, sha2. getrandom is not in the dependency tree; the import
-  list is unchanged (scripts/imports.mjs). base64 is a strict hand-written decoder
-  (src/b64.rs), no crate.
+  list is unchanged (scripts/imports.mjs). base64 is a small strict decoder written for
+  this crate (src/b64.rs), with no base64 dependency.
 - Independent reference: scripts/sealed.mjs uses Node built-ins only to make K,
   encrypt a deliverable to C, build the provider's secret JSON, seal K to a client
   key, and open k with the client's secret key. scripts/gen-sealed.mjs pairs it with

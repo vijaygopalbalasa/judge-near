@@ -30,8 +30,8 @@ The same schema as Judge Protocol's JavaScript engine (`judge-protocol/judge-ser
 checks. Scoring is the engine's `scoreOf`: weighted pass ratio, `Math.round` to an integer 0..100, capped at 99
 when any check fails; `pass = score >= threshold`.
 
-The five kinds of check (web/criteria.js says the same in plain words, and the page uses it to name the problem in
-criteria the judge calls invalid):
+The five kinds of check (web/criteria.js says the same in plain words, and the page uses it to say why the judge
+rejects a set of criteria):
 
 | Kind | Passes when | Parameters |
 |---|---|---|

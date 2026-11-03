@@ -214,7 +214,7 @@ async function loadJobs() {
       : markItem("bad", "Its judge is not a published Judge on NEAR build", `sha256 ${escrow.judge.hash}`),
     escrow.fullAccessKeys === 0
       ? markItem("ok", "No full-access key: nobody can replace its code", "the account has no key that can deploy")
-      : markItem("skip", `Still has ${escrow.fullAccessKeys === 1 ? "a full-access key" : `${escrow.fullAccessKeys} full-access keys`}: its owner could replace the code`, "see the README, \"Security model and honest limits\""),
+      : markItem("skip", `Still has ${escrow.fullAccessKeys === 1 ? "a full-access key" : `${escrow.fullAccessKeys} full-access keys`}: its owner could replace the code`, "see the README, \"Security model and limits\""),
   );
   status.className = "summary";
   const shown = escrow.jobs.slice(-MAX_CARDS).reverse();
