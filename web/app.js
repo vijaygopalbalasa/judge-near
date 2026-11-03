@@ -155,7 +155,7 @@ function jobCard(job, jobs, allRulings) {
   const disclosed = disclosedDelivery(job, jobs);
   if (disclosed) {
     card.append(el("p", "sealed-note", disclosed.published
-      ? "Disclosed: the README publishes this delivery's text, so its ruling can be re-run in full on it, with no key."
+      ? "Disclosed: this project publishes the delivery (see the README), so its ruling can be re-run in full on it, with no key."
       : `Disclosed: job ${disclosed.fromJob} delivered the same text in public (same dh), so its rulings can be re-run in full on that text, with no key.`));
   }
   // The delivery and the criteria fold away, so a phone shows each job's outcome and rulings without scrolling far.

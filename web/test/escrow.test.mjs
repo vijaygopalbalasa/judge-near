@@ -21,7 +21,7 @@ test("the ruling list is the README's escrow table, row for row, with the signer
     assert.ok(m, `the ruling cell links to the page: ${cells.at(-1)}`);
     return { job: Number.parseInt(cells[0], 10), tx: m[1], signer: m[2] };
   });
-  assert.equal(fromReadme.length, 11);
+  assert.equal(fromReadme.length, 12);
   assert.deepEqual(RULINGS.map(({ job, tx, signer }) => ({ job, tx, signer })), fromReadme);
   assert.ok(!/nearblocks\.io\/txns/.test(readme), "no links to the testnet explorer, which stopped indexing on Sep 27 2026");
   const prose = section.replace(/\s+/g, " ");
@@ -177,8 +177,8 @@ test("formatTime shows a job's nanosecond timestamp as a UTC minute", () => {
 });
 
 test("every sealed demo job on the page says how secret its delivery is, as the README does", () => {
-  assert.deepEqual(Object.keys(JOB_NOTES).map(Number), [2, 3, 4, 5, 6, 7, 8, 9]);
-  for (const n of [2, 3, 4, 5, 6, 9]) assert.match(JOB_NOTES[n], /not secret/, `job ${n}`);
+  assert.deepEqual(Object.keys(JOB_NOTES).map(Number), [2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  for (const n of [2, 3, 4, 5, 6, 9, 10]) assert.match(JOB_NOTES[n], /not secret/, `job ${n}`);
   for (const n of [7, 8]) assert.match(JOB_NOTES[n], /random nonce/, `job ${n}`);
   for (const n of Object.keys(JOB_NOTES).map(Number)) assert.ok(RULINGS.some((r) => r.job === n), `job ${n} has a ruling listed`);
   const prose = readme.replace(/\s+/g, " ");
@@ -208,6 +208,14 @@ test("job 9's delivery, an injection attempt published in the README, is offered
   assert.equal(disclosedDelivery({ ...job9, dh: "e".repeat(64) }, []), null, "another dh gets nothing");
 });
 
+test("job 10's delivery, the file whose hash the buyer knew, is offered for a full re-run: the exact bytes of evidence/job-10-delivery.csv", () => {
+  const job10 = { id: 10, sealed: true, dh: "72e2deafc4a74c223c0e2310a4de35af956b6dd9acf8ed68e2560c5582c4d9b1", deliverable_ct: "QUJD" };
+  const got = disclosedDelivery(job10, []);
+  assert.equal(got.published, true);
+  assert.equal(got.text, readFileSync(path.join(root, "evidence/job-10-delivery.csv"), "utf8"));
+  assert.equal(disclosedDelivery({ ...job10, dh: "e".repeat(64) }, []), null);
+});
+
 test("the one ruling that never opened a delivery (job 4's key_missing) is marked, so the page offers no delivery check for it", () => {
   assert.deepEqual(RULINGS.filter((r) => r.keyMissing).map((r) => [r.job, r.tx]), [[4, "J5hX6nup9AjXM4hsGXcRf29u279RAgseK3qZ9A8HPNt3"]]);
 });
@@ -231,7 +239,7 @@ function fakeIndex() {
   return { fetchImpl, asked };
 }
 
-test("discoverRulings finds the escrow's rulings through FastNEAR's transaction index: the README's eleven, in order, job 4's key_missing one marked", async () => {
+test("discoverRulings finds the escrow's rulings through FastNEAR's transaction index: the README's twelve, in order, job 4's key_missing one marked", async () => {
   const { fetchImpl, asked } = fakeIndex();
   const found = await discoverRulings(ESCROW, { fetchImpl });
   assert.deepEqual(found.map(asListed), RULINGS.map(asListed));
@@ -254,7 +262,7 @@ test("discoverRulings reads every page of the index (resume_token), stops after 
     }
     return ok({ transactions: body.tx_hashes.map((h) => indexFixture.transactions[h]).filter(Boolean) });
   };
-  assert.equal((await discoverRulings(ESCROW, { fetchImpl: paged })).length, 11);
+  assert.equal((await discoverRulings(ESCROW, { fetchImpl: paged })).length, 12);
   assert.deepEqual(tokens, [undefined, "1", "2"]);
   let calls = 0;
   const endless = async (url) => {
@@ -310,7 +318,7 @@ test("discoverRulings asks again, once, when an index request fails, as a busy i
     return ok({ transactions: body.tx_hashes.map((h) => indexFixture.transactions[h]).filter(Boolean) });
   };
   const found = await discoverRulings(ESCROW, { fetchImpl: flaky, retryDelayMs: 0 });
-  assert.equal(found.length, 11, "the failed batch was asked again and answered");
+  assert.equal(found.length, 12, "the failed batch was asked again and answered");
   const always = async () => {
     throw new TypeError("Failed to fetch");
   };
