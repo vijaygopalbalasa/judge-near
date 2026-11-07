@@ -61,7 +61,27 @@ Step 5 is one callback. Step 6 needs nobody's permission.
 - You trust Intel TDX and OutLayer: its workers, its keystore and its contract.
 
 Built at NEAR HACKATHON (Nov 1 to 14, 2026), on check kinds ported from the author's earlier MIT-licensed engine
-([prior work](#prior-work)). Tracks: Privacy & Private AI, Agent Economy, AI Security & Defense.
+([prior work](#prior-work)). Tracks: Privacy & Private AI, Agent Economy, AI Security & Defense
+([how it fits each](#fit-with-the-tracks)).
+
+## For reviewers: each claim and how to check it
+
+Every row can be checked from a fresh clone or the live page, with no NEAR account. Commands run from `agents/`
+after `npm ci` (Node 22 or newer).
+
+| Claim | Check | Expected |
+|---|---|---|
+| A ruling is what the published judge computes, and anyone can re-run it | `node jn.mjs verify --tx G5zVDozZmDykpyQmpDKYzjjVvWgjdGWFRFv8c1s5uXG1 --signer judgenear-worker.testnet` | eleven `ok` lines, then "Verified: judge v2 ... (pass: true, score: 100)" |
+| Text in a delivery cannot steer the verdict | `node jn.mjs verify --tx 7NfdY4rqEBpPHuri44XaVgJevxQtTFWv1UhUfsuKUQub --signer judgenear-worker.testnet --delivery ../evidence/job-9-delivery.txt` | "Verified: ... on the disclosed delivery (pass: false, score: 50)"; the client was refunded |
+| Payment and the buyer's key are released in one transaction, or neither is | Job 7 ([HbByxt...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=HbByxt3x5HdNwwx8PxNWjAu5FpLATbUpr719K8uTexwB&signer=judgenear-worker.testnet)) and job 8 ([42xXF6...](https://vijaygopalbalasa.github.io/judge-near/web/?tx=42xXF6fnYPHWEuqc1HUHK7fPDJ9MmwWXXdFYB2SuCq72&signer=judgenear-worker.testnet)) on the page | job 7: worker paid and `k` stored in the same callback; job 8: refund, no `k` |
+| Only this judge, called by this escrow, can read a worker's sealed key | [FZQN68...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=FZQN68oqzaN4SW9bDd11DECEJNEnrdf6YovdmNu2E84f&signer=judgenear-worker.testnet) and [WKN5M1...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=WKN5M1AeGvFJbmXwQhCvU5UPbGSXESTFKFiFNoU2W1Y&signer=judgenear-client.testnet) | the key's owner and the client each asked OutLayer directly: refused |
+| Each ruling ran inside Intel TDX, on the input and output in the transaction | **TEE attestation** on any ruling at https://vijaygopalbalasa.github.io/judge-near/web/ | seven green checks and "Proven" (all 12 re-checked on Nov 7 2026 at 16:00 UTC) |
+| Nobody can change the escrow's code | **Jobs on the escrow** on the page; the key deletion [2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet) | "No full-access key: nobody can replace its code" |
+| The deployed judge and escrow are these sources | `bash scripts/reproduce.sh` (macOS on Apple silicon; CI runs it on every push) | MATCH for each |
+| The whole exchange works between two programs | `npm run demo` | a pass (worker paid, client opens the report) and a fail (refund, key never released) |
+
+Tests: 38 judge, 116 escrow unit and 14 sandbox, 82 agent and 92 page tests, all in CI; 56 of 56 and 82 of 82 planted
+bugs caught ([commands](#status-and-tests)).
 
 ## Why the judge is a program, not a language model
 
@@ -106,6 +126,23 @@ So it fits work whose acceptance test is its form or its exact content:
 | A zero-knowledge contingent payment | A new circuit for every kind of task |
 | A marketplace's acceptance step: the buyer accepts, a timer accepts, or a resolver reads the work | The work is not held to a test written before it was done |
 | **Judge on NEAR** | Only checks a program can make; you trust the TEE and OutLayer |
+
+What a language model as judge cannot offer, and this does: the verdict is a pure function of the criteria and the
+delivery, so the worker can run the exact judge before delivering, a third party can recompute any past ruling byte
+for byte from the chain, and nothing written inside the work changes how it is graded. The TEE keeps the work
+sealed until it passes; it is not what makes the verdict trustworthy. The re-run is.
+
+## Fit with the tracks
+
+| Track | Its hints | What here fits |
+|---|---|---|
+| Privacy & Private AI | private AI, TEE, NEAR AI Cloud | The delivery stays encrypted on chain until the judge passes it inside Intel TDX; only then is its key sealed to the buyer. A failed delivery is never revealed to the buyer. Each ruling's TDX attestation is checked in the browser. |
+| AI Security & Defense | agent security, function call keys, TEE attestation | Protects an agent that pays for work: the payment rule is fixed before the work, prompt injection in the work does not move it (job 9), the escrow holds no keys, and the agents check the escrow's code hash, cap the ruling fee and refuse to send work their own judge run fails. |
+| Agent Economy | agents that earn, spend, hire and pay | Two agents hire and pay each other on testnet with no human between them (jobs 5 to 8): the client posts and funds, the worker delivers sealed, the escrow settles. |
+
+Not used: NEAR Intents, Chain Signatures and NEAR AI Cloud. The judge is a program, not a model, so there is no
+inference to host; payment is native NEAR on testnet. The agents sign with full-access keys, because NEAR refuses a
+deposit sent with a function-call key ([why](#security-model-and-limits)).
 
 ## Try it (no NEAR account needed)
 
@@ -318,7 +355,8 @@ and the Intel collateral come from OutLayer's API, the approved list from NEAR, 
 checked by Phala's dcap-qvl compiled to wasm. Because the signed hash has no length prefixes, the page also ties every
 field of OutLayer's record to the transaction's own request (caller, request id, wasm, secrets, payment, block and
 time) and refuses the older record format, which signs fewer fields. Each check is made as of the run's own moment, with
-the Intel data valid then (for these runs, until Nov 7 2026), so checking later gives the same answer. If OutLayer ever
+the Intel data valid then (for these runs, until Nov 7 2026), so checking later gives the same answer. Re-checked on
+Nov 7 2026 at 16:00 UTC, after that window: all 12 rulings still show "Proven". If OutLayer ever
 stops serving that archived data, the page says unproven, and the bundles below still re-check with outlayer-verify.
 outlayer-verify is a second, independent implementation, and the two agree.
 
