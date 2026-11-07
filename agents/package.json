@@ -13,7 +13,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "demo": "node demo.mjs"
+    "demo": "node demo.mjs",
+    "verify-all": "node verify-all.mjs"
   },
   "dependencies": {
     "near-api-js": "7.3.1"

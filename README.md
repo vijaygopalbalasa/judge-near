@@ -1,5 +1,7 @@
 # Judge on NEAR
 
+[![tests](https://github.com/vijaygopalbalasa/judge-near/actions/workflows/test.yml/badge.svg)](https://github.com/vijaygopalbalasa/judge-near/actions/workflows/test.yml)
+
 **Escrow for agent work: the payment and the work are released together, by a judge anyone can re-run.**
 
 When one agent hires another, the buyer won't pay before seeing the work, and the worker won't show the work before
@@ -66,8 +68,9 @@ Built at NEAR HACKATHON (Nov 1 to 14, 2026), on check kinds ported from the auth
 
 ## For reviewers: each claim and how to check it
 
-Every row can be checked from a fresh clone or the live page, with no NEAR account. Commands run from `agents/`
-after `npm ci` (Node 22 or newer).
+Every row can be checked from a fresh clone or the live page, with no NEAR account. The `node` and `npm` commands run
+from `agents/` after `npm ci` (Node 22 or newer); the `bash` command runs from the repository root. A shorter guide
+for reviewers is [`JUDGES.md`](JUDGES.md).
 
 | Claim | Check | Expected |
 |---|---|---|
@@ -78,6 +81,7 @@ after `npm ci` (Node 22 or newer).
 | Each ruling ran inside Intel TDX, on the input and output in the transaction | **TEE attestation** on any ruling at https://vijaygopalbalasa.github.io/judge-near/web/ | seven green checks and "Proven" (all 12 re-checked on Nov 7 2026 at 16:00 UTC) |
 | Nobody can change the escrow's code | **Jobs on the escrow** on the page; the key deletion [2myPss...](https://vijaygopalbalasa.github.io/judge-near/web/tx.html?tx=2myPssJ2LRwbFoLVpESFtzXdY1skHFqTgYB2GsTtSk5r&signer=judgenear-escrow.testnet) | "No full-access key: nobody can replace its code" |
 | The deployed judge and escrow are these sources | `bash scripts/reproduce.sh` (macOS on Apple silicon; CI runs it on every push) | MATCH for each |
+| Every one of the 12 rulings checks out | `npm run verify-all` | one line per ruling: 8 re-run in full (VERIFIED), the 4 whose delivery stays sealed get every check that needs no key (CONSISTENT), then "All 12 rulings check out." |
 | The whole exchange works between two programs | `npm run demo` | a pass (worker paid, client opens the report) and a fail (refund, key never released) |
 
 Tests: 38 judge, 116 escrow unit and 14 sandbox, 82 agent and 92 page tests, all in CI; 56 of 56 and 82 of 82 planted
@@ -507,13 +511,13 @@ rebuild or fetch from any copy, because its SHA-256 is fixed in each ruling.
 | `judge-wasm/` | The judge: Rust library and WASI binary, parity vectors, fuel corpus, build notes, mutation log |
 | `judge-wasm/release/judge.wasm` | The exact file OutLayer downloads, with its SHA-256 |
 | `contract/` | The escrow contract and a mock OutLayer for sandbox tests |
-| `agents/` | The command line tool a client and a worker use to run a job on testnet (`jn.mjs`), and the two agents (`agent.mjs`) |
+| `agents/` | The command line tool a client and a worker use to run a job on testnet (`jn.mjs`), the two agents (`agent.mjs`), and `verify-all.mjs`, which re-checks every ruling |
 | `web/` | The page: the escrow's jobs, read live, the browser verifier, the attestation check (`attest.js`), a transaction viewer (`tx.html`), and their tests |
 | `tools/keystore-probe/` | The probe used to check OutLayer's vault rules on testnet |
 | `tools/deploy-escrow.mjs` | Deploys the published escrow build to a testnet account and initialises it, in one transaction |
 | `tools/vault-probe.mjs` | Asks OutLayer directly, not through the escrow, to run the judge on a sealed job's key; OutLayer must refuse |
 | `docs/interface.md` | Input, criteria, verdict, hashes, contract rules and sealed mode, in one place |
-| `evidence/` | The disclosed deliveries of jobs 9 and 10, and each ruling's TEE attestation bundle (`evidence/attestation/`) |
+| `evidence/` | The disclosed deliveries of jobs 0, 1, 9 and 10 (jobs 2 to 4 sealed the texts of jobs 0 and 1), and each ruling's TEE attestation bundle (`evidence/attestation/`) |
 
 ## Built with
 

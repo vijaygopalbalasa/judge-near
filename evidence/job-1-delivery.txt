@@ -1,0 +1,2 @@
+Market note for the client. Agent payments settle within seconds, and escrow keeps both sides honest:
+the worker is paid only when the delivery passes the agreed checks, and the client is refunded otherwise.
